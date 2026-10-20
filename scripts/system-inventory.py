@@ -729,6 +729,130 @@ def cmd_summary(inv: dict) -> int:
     return 0
 
 
+def cmd_where(term: str, as_json: bool = False) -> int:
+    """Search all inventory sections for a case-insensitive substring match."""
+    inv = build()
+    term_l = term.lower()
+    hits = []
+
+    # skills
+    s = inv.get("skills", {})
+    if s.get("available"):
+        for name in s.get("names", []):
+            if term_l in name.lower():
+                hits.append({
+                    "section": "skills",
+                    "item": name,
+                    "detail": f"{s.get('by_source', {}).get(name, 'local')}"
+                })
+
+    # repos owned
+    r = inv.get("repos", {})
+    if r.get("available"):
+        for repo in r.get("local_repos", []):
+            if term_l in repo.lower():
+                hits.append({
+                    "section": "repos_owned",
+                    "item": repo,
+                    "detail": f"LOCAL — {HOME}/projects/{repo.split('/')[-1]}"
+                })
+        # foreign clones
+        data = load_json(REPOS_JSON, {})
+        for fc in data.get("foreign_clones", []):
+            repo = fc.get("repo", "")
+            if term_l in repo.lower():
+                path = fc.get("local_paths", ["?"])[0]
+                hits.append({
+                    "section": "repos_foreign",
+                    "item": repo,
+                    "detail": f"LOCAL — {HOME}/{path}"
+                })
+
+    # mcp servers
+    t = inv.get("tools", {})
+    if t.get("available"):
+        for srv in t.get("mcp_servers", []):
+            if term_l in srv.get("name", "").lower():
+                en = "enabled" if srv.get("enabled") else "disabled"
+                hits.append({
+                    "section": "mcp_servers",
+                    "item": srv["name"],
+                    "detail": f"{en} → {srv.get('command') or '—'}"
+                })
+
+    # cli tools
+    if t.get("available"):
+        for name, path in t.get("cli_tools", {}).items():
+            if term_l in name.lower():
+                hits.append({
+                    "section": "cli_tools",
+                    "item": name,
+                    "detail": path or "**absent**"
+                })
+
+    # models
+    m = inv.get("models", {})
+    if m.get("available"):
+        for mo in m.get("models", []):
+            if term_l in mo.get("name", "").lower():
+                hits.append({
+                    "section": "models",
+                    "item": mo["name"],
+                    "detail": f"{mo['size']} — {mo['path']}"
+                })
+
+    # key packages
+    a = inv.get("apps", {})
+    if a.get("available"):
+        for k, v in a.get("key_packages", {}).items():
+            if term_l in k.lower():
+                hits.append({
+                    "section": "key_packages",
+                    "item": k,
+                    "detail": v
+                })
+
+    if not hits:
+        if as_json:
+            print(json.dumps({"query": term, "hits": []}, indent=2))
+        else:
+            print(f"MISS: {term} — not found in any section")
+        return 1
+
+    if as_json:
+        print(json.dumps({"query": term, "hits": hits}, indent=2))
+        return 0
+
+    # human table, grouped by section
+    by_section: dict[str, list[dict]] = {}
+    for h in hits:
+        by_section.setdefault(h["section"], []).append(h)
+
+    section_order = [
+        "skills", "repos_owned", "repos_foreign",
+        "mcp_servers", "cli_tools", "models", "key_packages"
+    ]
+    section_labels = {
+        "skills": "SKILLS",
+        "repos_owned": "REPOS (owned)",
+        "repos_foreign": "REPOS (foreign)",
+        "mcp_servers": "MCP SERVERS",
+        "cli_tools": "CLI TOOLS",
+        "models": "MODELS",
+        "key_packages": "KEY PACKAGES",
+    }
+
+    for sec in section_order:
+        if sec not in by_section:
+            continue
+        print(section_labels[sec])
+        print()
+        for h in by_section[sec]:
+            print(f"  {h['item']}         ({h['detail']})")
+        print()
+    return 0
+
+
 def main() -> int:
     args = sys.argv[1:]
     config_path = None
@@ -750,6 +874,13 @@ def main() -> int:
         return cmd_check(build())
     if args and args[0] == "--summary":
         return cmd_summary(build())
+    if args and args[0] == "where":
+        if len(args) < 2:
+            print("usage: system-inventory.py where <term> [--json]", file=sys.stderr)
+            return 2
+        term = args[1]
+        as_json = "--json" in args[2:]
+        return cmd_where(term, as_json)
     inv = build()
     write_files(inv)
     print(f"wrote {OUT_MD} and {OUT_JSON}")

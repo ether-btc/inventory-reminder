@@ -1,0 +1,32 @@
+{
+  "home": "/home/hermes-pi",
+  "hermes_home": "/home/hermes-pi/.hermes",
+  "out_dir": "/home/hermes-pi/.hermes",
+  "repos_json": "/home/hermes-pi/.hermes/repos.json",
+  "repos_md": "/home/hermes-pi/.hermes/REPOS.md",
+  "config_yaml": "/home/hermes-pi/.hermes/config.yaml",
+  "venv": "/home/hermes-pi/.hermes/hermes-agent/venv",
+  "hermes_bin": "/home/hermes-pi/.hermes/hermes-agent/venv/bin/hermes",
+  "model_dirs": [
+    "/home/hermes-pi/.local/share/llama-cpp/models",
+    "/home/hermes-pi/.hermes/mnemosyne/models"
+  ],
+  "cli_tools": [
+    "hermes", "gh", "git", "codex", "gopass", "node", "npm", "npx",
+    "podman", "docker", "rg", "jq", "curl", "python3", "systemctl",
+    "sqlite3", "ffmpeg", "tailscale", "gpg", "hc", "xf", "claude", "aider"
+  ],
+  "service_hints": [
+    "hermes", "mnem", "prompro", "aeon", "arc-", "llama", "weth",
+    "decider", "curator", "claw", "beichtstuhl", "astra"
+  ],
+  "key_packages": [
+    "hermes-agent", "mnemosyne-memory", "llama-cpp-python", "openai",
+    "anthropic", "httpx", "fastapi", "rich", "pydantic", "numpy",
+    "transformers", "torch", "sentence-transformers", "onnxruntime",
+    "cryptography", "prompt-toolkit", "uvicorn", "requests"
+  ],
+  "owner": "ether-btc",
+  "notes_file": "/home/hermes-pi/.hermes/repos-notes.json",
+  "max_depth": 5
+}

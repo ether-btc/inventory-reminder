@@ -105,3 +105,66 @@ def test_summary_one_line(cfg, fake_home):
 def test_missing_config_file_exits_2(fake_home):
     p = run_script("system-inventory.py", ["--config", str(fake_home / "nope.json"), "--write"])
     assert p.returncode == 2
+
+
+def test_where_hit_repo_owned(cfg, fake_home):
+    p = run_script("system-inventory.py", ["--config", str(cfg), "where", "demo"])
+    assert p.returncode == 0, p.stderr
+    assert "REPOS (owned)" in p.stdout
+    assert "fixture-owner/demo" in p.stdout
+
+
+def test_where_hit_repo_foreign(cfg, fake_home):
+    p = run_script("system-inventory.py", ["--config", str(cfg), "where", "upstream"])
+    assert p.returncode == 0, p.stderr
+    assert "REPOS (foreign)" in p.stdout
+    assert "upstream/foo" in p.stdout
+
+
+def test_where_hit_mcp(cfg, fake_home):
+    p = run_script("system-inventory.py", ["--config", str(cfg), "where", "demo_mcp"])
+    assert p.returncode == 0, p.stderr
+    assert "MCP SERVERS" in p.stdout
+    assert "demo_mcp" in p.stdout
+    assert "enabled" in p.stdout
+
+
+def test_where_hit_model(cfg, fake_home):
+    p = run_script("system-inventory.py", ["--config", str(cfg), "where", "fake-7b"])
+    assert p.returncode == 0, p.stderr
+    assert "MODELS" in p.stdout
+    assert "fake-7b" in p.stdout
+
+
+def test_where_miss_exits_1(cfg, fake_home):
+    p = run_script("system-inventory.py", ["--config", str(cfg), "where", "definitely-not-there-xyz"])
+    assert p.returncode == 1, p.stdout
+    assert "MISS" in p.stdout
+    assert "not found in any section" in p.stdout
+
+
+def test_where_json_output(cfg, fake_home):
+    p = run_script("system-inventory.py", ["--config", str(cfg), "where", "demo", "--json"])
+    assert p.returncode == 0, p.stderr
+    import json
+    data = json.loads(p.stdout)
+    assert data["query"] == "demo"
+    assert len(data["hits"]) >= 1
+    assert all(k in h for h in data["hits"] for k in ("section", "item", "detail"))
+    # should have repos_owned hit
+    sections = {h["section"] for h in data["hits"]}
+    assert "repos_owned" in sections
+
+
+def test_where_case_insensitive(cfg, fake_home):
+    p = run_script("system-inventory.py", ["--config", str(cfg), "where", "DEMO_MCP"])
+    assert p.returncode == 0, p.stderr
+    assert "demo_mcp" in p.stdout.lower()
+
+
+def test_where_skills_unavailable_degrades_gracefully(cfg, fake_home):
+    """Skills section is UNAVAILABLE in fixtures; where should not crash, just skip it."""
+    p = run_script("system-inventory.py", ["--config", str(cfg), "where", "nonexistent-skill"])
+    # Since skills is UNAVAILABLE and term not found elsewhere -> MISS
+    assert p.returncode == 1, p.stdout
+    assert "MISS" in p.stdout
