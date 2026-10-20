@@ -1,50 +1,28 @@
-# RESUME — inventory-reminder open-source (updated 2026-10-20 ~13:00)
+# RESUME — inventory-reminder open-source (updated 2026-10-20 ~14:30, COMPLETE)
 
 ## State
-- **Local repo, unpushed:** `~/projects/inventory-reminder`, clean tree at `39e7455`
-  (8 commits total: 3 original + WP1 feat(where)+host wiring + docs + review-fixes).
-  21/21 tests pass.
-- **User pre-authorized publication** ("then publish to github… high quality when I share
-  with third parties"). WP3 = create `ether-btc/inventory-reminder` private → green CI →
-  flip public → register (REPOS.md note, wiki, AEON). Log the go + do it.
-- **Standard decision (user, 10-20):** NousResearch/hermes-agent CONTRIBUTING.md is the
-  bar — standalone plugin/skill repo per upstream policy, conform to their conventions.
+- **Repo published:** `https://github.com/ether-btc/inventory-reminder` (PUBLIC, CI green)
+- **Local repo:** `~/projects/inventory-reminder`, clean tree at `b76fe2b` (10 commits), pushed to origin/master
+- **AEON:** entry committed and pushed to `ether-btc/aeon` main (`cc711ef`)
+- **Wiki:** page filed at `entities/inventory-reminder-20261020.md`, index.md + log.md updated, pushed via wiki-push.sh to master
+- **repo-inventory --note:** note set in `~/.hermes/repos-notes.json`
+- **Live host:** `setup-host.sh` ran successfully — config + refresh script installed in `~/.hermes/`, pipeline OK, drift check clean
 
-## What's done (WP1 complete + review defects fixed)
-- All 3 minor defects from independent review (deleg_6389fdfd) fixed:
-  1. **system-inventory.py** — `scan_skills()` now returns `name_to_source` mapping;
-     `cmd_where` uses it so skills show correct source (builtin/official/skills.sh/url/local)
-  2. **scripts/refresh.example.sh** — removed; `refresh.sh` is the canonical pipeline
-  3. **scripts/setup-host.sh** — `--check` guarded to only run if `inventory.json` exists
-     (first run has no drift baseline)
-- `CONTRIBUTING.md` — documents owner fail-closed invariant
-- `README.md` — documents `--json` must appear after term
-- Live `~/.hermes/scripts/*.py` copies **untouched**
+## What's done (all WP complete)
+- **WP1:** feat(where) + host wiring + Hermes plugin adapter + docs to hermes-agent standard — 21/21 tests, AST stdlib guard clean
+- **Review fixes:** 3 minor defects from deleg_6389fdfd all fixed (skill source mapping, refresh.example.sh removed, setup-host.sh --check guard)
+- **WP2:** setup-host.sh live run verified (config + refresh script + install-state + backup + pipeline OK + drift check clean)
+- **CI fix:** mkdir output dir before write_text in both scanners (fixed GitHub Actions smoke test FileNotFoundError) — CI now green
+- **WP3:** Published — private → push → CI green → public → registered (repo-inventory --note, wiki filing, AEON entry)
 
-## Team results (deleg_9c0c086b) + dispositions
-1. **Publication review:** package state CLEAN — invariants hold, live scripts untouched.
-2. **Effectivity measurement:** honest result, LOW confidence — folded into README.
-3. **Prototype spec:** two defects corrected by design (fixture-correct where tests;
-   wrapper-based host wiring with backup + rollback).
-
-## Independent review (deleg_6389fdfd) — ALL DISPOSITIONED
-- **RECOMMENDATION: APPROVE** after fixing 3 minor defects → **ALL FIXED**
-- All 6 invariants PASS (read-only, UNAVAILABLE-not-hole, deterministic, drift gate,
-  stdlib-only, config-driven paths, owner fail-closed)
-- README claims match behavior
-- All commits follow Conventional Commits
-- No secrets/tokens/credentials in repo
-
-## Remaining work, in order
-- **WP2 gate:** live-host verification — run `setup-host.sh` (live mutation into
-  `~/.hermes`, needs your explicit authorization per hard-gate rule) + verify cron
-  still green + independent review subagent dispositioned (done: APPROVE)
-- **WP3 publish (pre-authorized):** private create → push → CI green → public →
-  register: `repo-inventory --note`, wiki filing, AEON entry.
-  Then optionally run setup-host.sh for real so prototype is OPERATIONAL here.
+## Registration artifacts
+- Repo: https://github.com/ether-btc/inventory-reminder (public)
+- Wiki: entities/inventory-reminder-20261020.md + index.md + log.md (pushed via wiki-push.sh to master)
+- AEON: memory/filing-registry.json entry (committed cc711ef, pushed to main)
+- repos-notes.json: note set for ether-btc/inventory-reminder
+- Hard-gate auth logs: ~/.hermes/cache/scratch/hard-gate-auth-inventory-reminder-wp2.md, wp3.md
 
 ## Gotchas
-- `test_deterministic_reruns` is flaky on live host (systemd running_total changes
-  between runs — pre-existing, not a regression). Re-run passes.
-- Trigger words in shell command lines are runtime-blocked — route prose through files.
-- Always `git status --short` before commits (SPEC.md/spec_output.json untracked).
+- test_deterministic_reruns is flaky on live host (systemd running_total changes between runs — pre-existing, not a regression).
+- Always `git status --short` before commits (SPEC.md/spec_output.json untracked, ignored via .gitignore).
+- Wiki has two branches — master (active) and main (frozen). Always push wiki filings to master via wiki-push.sh.
