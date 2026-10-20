@@ -1,10 +1,10 @@
-# RESUME — inventory-reminder open-source (updated 2026-10-20 ~15:00, COMPLETE + uninstall+monitor)
+# RESUME — inventory-reminder open-source (updated 2026-10-20 ~15:25, COMPLETE, session wrapped)
 
 ## State
 - **Repo published:** `https://github.com/ether-btc/inventory-reminder` (PUBLIC, CI green)
-- **Local repo:** `~/projects/inventory-reminder`, clean tree at `45816f0` (11 commits), pushed to origin/master
+- **Local repo:** `~/projects/inventory-reminder`, clean tree at `62c4b9f` (11 commits), pushed to origin/master (in sync)
 - **AEON:** entry committed and pushed to `ether-btc/aeon` main (`cc711ef`)
-- **Wiki:** page filed at `entities/inventory-reminder-20261020.md`, index.md + log.md updated, pushed via wiki-push.sh to master
+- **Wiki:** page filed at `entities/inventory-reminder-20261020.md` + uninstall/monitoring sections, pushed via wiki-push.sh to master; verified byte-identical on remote
 - **repo-inventory --note:** note set in `~/.hermes/repos-notes.json`
 - **Live host:** `setup-host.sh` ran successfully — config + refresh script installed in `~/.hermes/`, pipeline OK, drift check clean
 
@@ -16,6 +16,7 @@
 - **WP3:** Published — private → push → CI green → public → registered (repo-inventory --note, wiki filing, AEON entry)
 - **Uninstall:** rollback-host.sh rewritten as full host uninstall — restores/removes refresh script, removes config, install-state, generated outputs (inventory.json, INVENTORY.md), logs, pycache; idempotent; leaves unrelated ~/.hermes/scripts/* untouched
 - **Monitoring:** scripts/monitor.sh added — `status` (wiring + inventory snapshot + section availability + unavailable-section count), `run` (timed refresh + exit code + drift vs previous run), `history [N]` (refresh log tail); reports scan success rate, drift events, section availability honestly framed
+- **README security fix:** vulnerability reporting = private GitHub Security Advisory solely (no email placeholder)
 
 ## Registration artifacts
 - Repo: https://github.com/ether-btc/inventory-reminder (public)
