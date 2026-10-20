@@ -451,6 +451,7 @@ def _sec(title: str, note: str = "") -> list[str]:
 
 
 def write_files(inv: dict) -> None:
+    OUT_JSON.parent.mkdir(parents=True, exist_ok=True)
     OUT_JSON.write_text(json.dumps(inv, indent=2, sort_keys=False) + "\n")
 
     L: list[str] = []
@@ -606,6 +607,7 @@ def write_files(inv: dict) -> None:
             L.append("_No hermes-related units are running — check whether that is expected._")
 
     L.append("")
+    OUT_MD.parent.mkdir(parents=True, exist_ok=True)
     OUT_MD.write_text("\n".join(L) + "\n")
 
 

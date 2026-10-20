@@ -188,6 +188,7 @@ def build() -> dict:
 
 
 def write_files(inv: dict) -> None:
+    OUT_JSON.parent.mkdir(parents=True, exist_ok=True)
     OUT_JSON.write_text(json.dumps(inv, indent=2) + "\n")
     ours, foreign = inv["our_repos"], inv["foreign_clones"]
     online = [e for e in ours if e["status"] == "ONLINE-ONLY"]
@@ -225,6 +226,7 @@ def write_files(inv: dict) -> None:
     for e in foreign:
         L.append(f"- `{e['repo']}` — {', '.join('`~/'+p+'`' for p in e['local_paths'][:2])}")
     L.append("")
+    OUT_MD.parent.mkdir(parents=True, exist_ok=True)
     OUT_MD.write_text("\n".join(L) + "\n")
 
 
@@ -315,6 +317,7 @@ def main() -> int:
         k, v = args[1].split("=", 1)
         notes = load_json(NOTES, {})
         notes[k.strip()] = v.strip()
+        NOTES.parent.mkdir(parents=True, exist_ok=True)
         NOTES.write_text(json.dumps(notes, indent=2, sort_keys=True) + "\n")
         print(f"note set for {k.strip()}")
         inv = build()
