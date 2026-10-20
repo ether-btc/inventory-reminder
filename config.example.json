@@ -1,0 +1,29 @@
+{
+  "home": "/home/YOURUSER",
+  "hermes_home": "/home/YOURUSER/.hermes",
+  "out_dir": "/home/YOURUSER/.hermes",
+  "repos_json": "/home/YOURUSER/.hermes/repos.json",
+  "repos_md": "/home/YOURUSER/.hermes/REPOS.md",
+  "config_yaml": "/home/YOURUSER/.hermes/config.yaml",
+  "venv": "/home/YOURUSER/.hermes/hermes-agent/venv",
+  "hermes_bin": "/home/YOURUSER/.hermes/hermes-agent/venv/bin/hermes",
+  "model_dirs": [
+    "/home/YOURUSER/.local/share/llama-cpp/models",
+    "/home/YOURUSER/.hermes/mnemosyne/models"
+  ],
+  "cli_tools": [
+    "hermes", "gh", "git", "node", "npm", "npx",
+    "podman", "docker", "rg", "jq", "curl", "python3",
+    "systemctl", "sqlite3", "ffmpeg", "tailscale", "gpg"
+  ],
+  "service_hints": [
+    "hermes", "mnem", "llama", "decider", "curator"
+  ],
+  "key_packages": [
+    "hermes-agent", "openai", "anthropic", "httpx",
+    "fastapi", "rich", "pydantic", "numpy", "onnxruntime"
+  ],
+  "owner": "YOUR-GITHUB-OWNER",
+  "notes_file": "/home/YOURUSER/.hermes/repos-notes.json",
+  "max_depth": 5
+}

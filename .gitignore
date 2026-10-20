@@ -1,0 +1,7 @@
+# local output / state
+output/
+*.log
+refresh.log
+__pycache__/
+*.pyc
+.pytest_cache/

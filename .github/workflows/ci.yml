@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test deps
+        run: pip install pytest
+      - name: Run hermetic tests
+        run: python -m pytest tests -q
+      - name: Smoke — no-config run degrades cleanly
+        run: |
+          python scripts/system-inventory.py --write
+          python scripts/system-inventory.py --check
+      - name: Lint (syntax, stdlib-only check)
+        run: |
+          python -m py_compile scripts/system-inventory.py scripts/repo-inventory.py
+          grep -nE '^\s*(import|from)\s' scripts/system-inventory.py scripts/repo-inventory.py \
+            | grep -vE 'import (json|os|re|shutil|subprocess|sys|pathlib|datetime|__future__|time|argparse|collections|dataclasses|typing)' \
+            && echo "NON-STDLIB IMPORT FOUND" && exit 1 || echo "stdlib-only: OK"
