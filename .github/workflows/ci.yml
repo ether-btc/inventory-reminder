@@ -20,9 +20,23 @@ jobs:
         run: |
           python scripts/system-inventory.py --write
           python scripts/system-inventory.py --check
-      - name: Lint (syntax, stdlib-only check)
+      - name: Lint (syntax + stdlib-only via AST)
         run: |
           python -m py_compile scripts/system-inventory.py scripts/repo-inventory.py
-          grep -nE '^\s*(import|from)\s' scripts/system-inventory.py scripts/repo-inventory.py \
-            | grep -vE 'import (json|os|re|shutil|subprocess|sys|pathlib|datetime|__future__|time|argparse|collections|dataclasses|typing)' \
-            && echo "NON-STDLIB IMPORT FOUND" && exit 1 || echo "stdlib-only: OK"
+          python - <<'EOF'
+          import ast, sys
+          stdlib = set(sys.stdlib_module_names)
+          for f in ("scripts/system-inventory.py", "scripts/repo-inventory.py"):
+              tree = ast.parse(open(f).read())
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      mods = [a.name.split(".")[0] for a in node.names]
+                  elif isinstance(node, ast.ImportFrom):
+                      mods = [node.module.split(".")[0]] if node.module else []
+                  else:
+                      continue
+                  bad = [m for m in mods if m and m not in stdlib]
+                  if bad:
+                      sys.exit(f"NON-STDLIB IMPORT in {f}: {bad}")
+          print("stdlib-only: OK")
+          EOF
