@@ -181,5 +181,4 @@ MIT — see [LICENSE](LICENSE).
   `/home/YOURUSER` placeholders.
 - The scanners are read-only on the system (listings, file reads, `gh` API reads).
 - No network calls other than fixed `gh` API reads against the authenticated user.
-- Vulnerability reporting: open a private Security Advisory on GitHub or email
-  security@ether-btc.example.com (placeholder — update on publish).
+- Vulnerability reporting: open a private [Security Advisory](https://github.com/ether-btc/inventory-reminder/security/advisories/new) on GitHub.
