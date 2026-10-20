@@ -5,3 +5,7 @@ refresh.log
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# untracked working files (subagent artifacts, never commit)
+SPEC.md
+spec_output.json
