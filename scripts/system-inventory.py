@@ -267,6 +267,7 @@ def scan_skills() -> dict:
         "hub_installed": sorted(r["name"] for r in rows if r["source"] not in ("local", "builtin")),
         "builtin": sorted(r["name"] for r in rows if r["source"] == "builtin"),
         "names": sorted(r["name"] for r in rows),
+        "name_to_source": {r["name"]: r["source"] for r in rows},
     }
 
 
@@ -740,10 +741,11 @@ def cmd_where(term: str, as_json: bool = False) -> int:
     if s.get("available"):
         for name in s.get("names", []):
             if term_l in name.lower():
+                source = s.get("name_to_source", {}).get(name, "local")
                 hits.append({
                     "section": "skills",
                     "item": name,
-                    "detail": f"{s.get('by_source', {}).get(name, 'local')}"
+                    "detail": source
                 })
 
     # repos owned

@@ -83,6 +83,7 @@ repo-inventory.py where <term> [--config PATH]
 - Case-insensitive substring match across all sections.
 - Exit code: `0` on hit (≥1 match), `1` on miss.
 - `--json` emits `{"query": "...", "hits": [{"section", "item", "detail"}, ...]}` for scripting.
+- `--json` must appear *after* the term argument: `where <term> --json`. (The term is positional.)
 - Human output groups hits by section.
 
 ## Observed effectivity on the origin host

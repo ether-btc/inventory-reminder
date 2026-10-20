@@ -60,8 +60,13 @@ mkdir -p "$LOG_DIR"
 echo "Verifying..."
 INVENTORY_CONFIG="$CONFIG_DST" python3 "$REPO_DIR/scripts/repo-inventory.py" --write >/dev/null
 INVENTORY_CONFIG="$CONFIG_DST" python3 "$REPO_DIR/scripts/system-inventory.py" --write >/dev/null
-INVENTORY_CONFIG="$CONFIG_DST" python3 "$REPO_DIR/scripts/system-inventory.py" --check >/dev/null
-echo "  pipeline OK — INVENTORY.md + inventory.json regenerated, drift check clean"
+# Only run drift check if a prior inventory.json exists (first run has no baseline)
+if [[ -f "$HOME/.hermes/inventory.json" ]]; then
+    INVENTORY_CONFIG="$CONFIG_DST" python3 "$REPO_DIR/scripts/system-inventory.py" --check >/dev/null
+    echo "  pipeline OK — INVENTORY.md + inventory.json regenerated, drift check clean"
+else
+    echo "  pipeline OK — INVENTORY.md + inventory.json regenerated (first run, no drift baseline yet)"
+fi
 
 echo "Done. Cron job 'inventory-refresh' (weekly) now runs the repo's refresh.sh via Hermes."
 echo "To rollback: $REPO_DIR/scripts/rollback-host.sh"

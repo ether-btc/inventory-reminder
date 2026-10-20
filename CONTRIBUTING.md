@@ -51,6 +51,7 @@ Every change must preserve these invariants. CI enforces them; reviewers will bl
 | **Drift gate exit contract** | `--check` exits 1 on drift, 0 on no drift. Exit code is a stable interface. | `test_check_no_drift_exit0_then_drift_exit1` |
 | **Stdlib only** | No third-party Python imports. CI runs an AST-based stdlib guard. | `.github/workflows/ci.yml` |
 | **Config-driven paths** | All host-specific paths come from `--config`/`INVENTORY_CONFIG`; no hardcoded paths. | `test_write_produces_both_files` with custom config |
+| **Owner fail-closed** | `repo-inventory.py` hard-exits (2) if `owner` is configured but `gh repo list` fails, rather than degrading silently. This is intentional — a broken GitHub read must not produce a false "no repos owned" result. | `test_no_owner_configured_still_writes_local_clones` |
 
 ---
 
