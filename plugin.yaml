@@ -1,0 +1,12 @@
+name: inventory-reminder
+version: 1.0.0
+description: "Live, evidence-backed inventory of this host — repos, skills, MCP servers, CLIs, models and services. Ask 'do I already have X?' and get the cached ground truth instead of a guess."
+author: ether-btc
+provides_tools:
+  - inventory_where
+  - inventory_summary
+provides_hooks: []
+license: MIT
+homepage: https://github.com/ether-btc/inventory-reminder
+requires_hermes: ">=0.19"
+tags: [inventory, capabilities, host, discovery, read-only]

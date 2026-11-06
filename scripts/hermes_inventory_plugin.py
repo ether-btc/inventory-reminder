@@ -17,23 +17,40 @@ import os
 import sys
 from pathlib import Path
 
-# Default inventory location (overridable by INVENTORY_JSON env)
+# Default inventory location (overridable by INVENTORY_JSON env, resolved per call
+# so a plugin loaded once serves whichever home is active when the tool is invoked).
 DEFAULT_INVENTORY_JSON = Path.home() / ".hermes" / "inventory.json"
-INVENTORY_JSON = Path(os.environ.get("INVENTORY_JSON", str(DEFAULT_INVENTORY_JSON)))
+
+
+def inventory_json() -> Path:
+    """Path to the cached inventory, resolved per call."""
+    return Path(os.environ.get("INVENTORY_JSON", str(DEFAULT_INVENTORY_JSON)))
 
 
 def load_inventory() -> dict | None:
     """Load inventory.json if it exists and is valid."""
     try:
-        if INVENTORY_JSON.exists():
-            return json.loads(INVENTORY_JSON.read_text())
+        path = inventory_json()
+        if path.exists():
+            return json.loads(path.read_text())
     except Exception:  # noqa: BLE001
         pass
     return None
 
 
 def cmd_inventory_where(term: str, as_json: bool = False) -> str:
-    """Tool handler for inventory_where."""
+    """Tool handler for inventory_where (never raises; every path is a JSON string)."""
+    try:
+        return _where_impl(term, as_json)
+    except Exception as exc:  # noqa: BLE001 - a tool call must never raise
+        return json.dumps({
+            "query": term,
+            "hits": [],
+            "error": f"inventory lookup failed: {type(exc).__name__}: {exc}",
+        })
+
+
+def _where_impl(term: str, as_json: bool = False) -> str:
     inv = load_inventory()
     if not inv:
         result = {"query": term, "hits": [], "error": "inventory.json not found or invalid"}
@@ -164,7 +181,14 @@ def cmd_inventory_where(term: str, as_json: bool = False) -> str:
 
 
 def cmd_inventory_summary() -> str:
-    """Tool handler for inventory_summary (one-line digest)."""
+    """Tool handler for inventory_summary (never raises; one-line digest)."""
+    try:
+        return _summary_impl()
+    except Exception as exc:  # noqa: BLE001 - a tool call must never raise
+        return f"INVENTORY unavailable — {type(exc).__name__}: {exc}"
+
+
+def _summary_impl() -> str:
     inv = load_inventory()
     if not inv:
         return "INVENTORY unavailable — no inventory.json"
@@ -216,7 +240,7 @@ def register(ctx) -> None:
             },
             "required": ["term"],
         },
-        handler=lambda args: cmd_inventory_where(args["term"], args.get("json", False)),
+        handler=lambda args, **kw: cmd_inventory_where(args.get("term", ""), args.get("json", False)),
         description="Search the live inventory digest for a capability across all sections (skills, repos, MCP, CLIs, models, key packages).",
     )
 
@@ -228,7 +252,7 @@ def register(ctx) -> None:
             "type": "object",
             "properties": {},
         },
-        handler=lambda _args: cmd_inventory_summary(),
+        handler=lambda _args, **kw: cmd_inventory_summary(),
         description="One-line inventory digest for session bootstrap / memory layer.",
     )
 
