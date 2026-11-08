@@ -17,14 +17,40 @@ import os
 import sys
 from pathlib import Path
 
-# Default inventory location (overridable by INVENTORY_JSON env, resolved per call
-# so a plugin loaded once serves whichever home is active when the tool is invoked).
-DEFAULT_INVENTORY_JSON = Path.home() / ".hermes" / "inventory.json"
+# Module-level plugin config, populated by register() when Hermes loads the plugin.
+# Kept module-global so the (ctx-less) handlers can read profile-aware settings.
+_PLUGIN_CONFIG: dict = {}
+
+
+def _hermes_home() -> Path:
+    """Resolve the active Hermes home at call time (profile-aware)."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        return Path(get_hermes_home())
+    except Exception:  # noqa: BLE001
+        return Path.home() / ".hermes"
+
+
+# Default inventory location (profile-aware, overridable by plugin config or the
+# legacy INVENTORY_JSON env var for backward compatibility).
+DEFAULT_INVENTORY_JSON = _hermes_home() / "inventory.json"
 
 
 def inventory_json() -> Path:
-    """Path to the cached inventory, resolved per call."""
-    return Path(os.environ.get("INVENTORY_JSON", str(DEFAULT_INVENTORY_JSON)))
+    """Path to the cached inventory, resolved per call.
+
+    Resolution order: legacy INVENTORY_JSON env var (backward compat / tests) ->
+    plugin config (inventory_json / inventory_path) -> profile-aware default.
+    """
+    env_val = os.environ.get("INVENTORY_JSON")
+    if env_val:
+        return Path(env_val)
+    for key in ("inventory_json", "inventory_path", "INVENTORY_JSON"):
+        val = _PLUGIN_CONFIG.get(key)
+        if val:
+            return Path(val)
+    return _hermes_home() / "inventory.json"
 
 
 def load_inventory() -> dict | None:
@@ -51,6 +77,9 @@ def cmd_inventory_where(term: str, as_json: bool = False) -> str:
 
 
 def _where_impl(term: str, as_json: bool = False) -> str:
+    if not term or not str(term).strip():
+        result = {"query": term, "hits": [], "error": "term must not be empty"}
+        return json.dumps(result)
     inv = load_inventory()
     if not inv:
         result = {"query": term, "hits": [], "error": "inventory.json not found or invalid"}
@@ -81,7 +110,7 @@ def _where_impl(term: str, as_json: bool = False) -> str:
                     "detail": f"LOCAL — {Path.home()}/projects/{repo.split('/')[-1]}"
                 })
         # foreign clones
-        repos_json = Path.home() / ".hermes" / "repos.json"
+        repos_json = _hermes_home() / "repos.json"
         try:
             data = json.loads(repos_json.read_text()) if repos_json.exists() else {}
         except Exception:  # noqa: BLE001
@@ -228,17 +257,37 @@ def _summary_impl() -> str:
 # Hermes plugin entry point
 def register(ctx) -> None:
     """Register the inventory plugin tools and commands with Hermes."""
+    global _PLUGIN_CONFIG
+    # Pull plugin config (profile-aware) so env vars are no longer required.
+    try:
+        cfg = {}
+        for key in ("inventory_json", "inventory_path", "INVENTORY_JSON",
+                    "inventory_digest", "HERMES_INVENTORY_DIGEST", "digest"):
+            try:
+                v = ctx.get_config(key, None)
+            except Exception:  # noqa: BLE001
+                v = None
+            if v is not None:
+                cfg[key] = v
+        _PLUGIN_CONFIG.update(cfg)
+    except Exception:  # noqa: BLE001
+        pass
+
     # Register the `inventory_where` tool (callable from agents)
     ctx.register_tool(
         name="inventory_where",
         toolset="inventory",
         schema={
-            "type": "object",
-            "properties": {
-                "term": {"type": "string", "description": "Search term (substring, case-insensitive)"},
-                "json": {"type": "boolean", "description": "Emit machine-readable JSON", "default": False}
+            "name": "inventory_where",
+            "description": "Search the live inventory digest for a capability across all sections (skills, repos, MCP, CLIs, models, key packages).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "term": {"type": "string", "description": "Search term (substring, case-insensitive)"},
+                    "json": {"type": "boolean", "description": "Emit machine-readable JSON", "default": False}
+                },
+                "required": ["term"],
             },
-            "required": ["term"],
         },
         handler=lambda args, **kw: cmd_inventory_where(args.get("term", ""), args.get("json", False)),
         description="Search the live inventory digest for a capability across all sections (skills, repos, MCP, CLIs, models, key packages).",
@@ -249,24 +298,29 @@ def register(ctx) -> None:
         name="inventory_summary",
         toolset="inventory",
         schema={
-            "type": "object",
-            "properties": {},
+            "name": "inventory_summary",
+            "description": "One-line inventory digest for session bootstrap / memory layer.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
         },
         handler=lambda _args, **kw: cmd_inventory_summary(),
         description="One-line inventory digest for session bootstrap / memory layer.",
     )
 
     # Register the CLI subcommand: `hermes inventory where <term> [--json]`
-    # This is done via a command hook that intercepts the `inventory` subcommand.
-    # Since we don't have a direct `register_command` for subcommands, we use
-    # a pre-tool-call hook to catch the `hermes inventory` invocation pattern.
-    # Alternative: register a tool that the CLI can dispatch to.
-    # For simplicity, we expose the functionality via the two tools above.
-    # The user can invoke: `hermes tool inventory_where --term aider --json false`
-    # Or add a shell alias/function: `hermes-inventory() { hermes tool inventory_where --term "$1" --json "${2:-false}"; }`
+    # Exposed via the two tools above; see README for CLI usage.
 
-    # Session-start digest (opt-in)
-    if os.environ.get("HERMES_INVENTORY_DIGEST") == "1":
+    # Session-start digest (opt-in): env var (backward compat) or plugin config
+    digest_on = os.environ.get("HERMES_INVENTORY_DIGEST") == "1"
+    if not digest_on:
+        for key in ("inventory_digest", "HERMES_INVENTORY_DIGEST", "digest"):
+            v = _PLUGIN_CONFIG.get(key)
+            if v is True or str(v).lower() in ("1", "true", "yes", "on"):
+                digest_on = True
+                break
+    if digest_on:
         print(cmd_inventory_summary(), file=sys.stderr)
 
 
