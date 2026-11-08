@@ -93,3 +93,48 @@ def test_handlers_return_strings_the_dispatcher_can_forward(inventory_file):
         handler = call.kwargs["handler"]
         out = handler({"term": "aider"}, task_id="t1", session_id="s1")
         assert isinstance(out, str)
+
+
+def test_register_wraps_schemas_with_parameters():
+    ctx = MagicMock()
+    adapter.register(ctx)
+    by_name = {c.kwargs["name"]: c.kwargs["schema"] for c in ctx.register_tool.call_args_list}
+    where = by_name["inventory_where"]
+    assert "parameters" in where
+    assert where["parameters"]["type"] == "object"
+    assert "term" in where["parameters"]["properties"]
+    assert where["parameters"].get("required") == ["term"]
+    summary = by_name["inventory_summary"]
+    assert "parameters" in summary
+    assert summary["parameters"].get("properties") == {}
+
+
+def test_empty_term_is_rejected_via_handler():
+    out = adapter.cmd_inventory_where("   ")
+    parsed = json.loads(out)
+    assert parsed["hits"] == []
+    assert "empty" in parsed["error"].lower()
+
+
+def test_inventory_path_follows_hermes_home(monkeypatch):
+    monkeypatch.delenv("INVENTORY_JSON", raising=False)
+    adapter._PLUGIN_CONFIG.clear()
+    monkeypatch.setenv("HERMES_HOME", "/tmp/hermes-home-smoke")
+    assert str(adapter.inventory_json()).startswith("/tmp/hermes-home-smoke")
+    assert adapter.inventory_json().name == "inventory.json"
+
+
+def test_register_reads_plugin_config(monkeypatch):
+    monkeypatch.delenv("INVENTORY_JSON", raising=False)
+    adapter._PLUGIN_CONFIG.clear()
+
+    def fake_get_config(key, default=None):
+        if key == "inventory_json":
+            return "/tmp/cfg-inventory.json"
+        return default
+
+    ctx = MagicMock()
+    ctx.get_config.side_effect = fake_get_config
+    adapter.register(ctx)
+    assert adapter._PLUGIN_CONFIG.get("inventory_json") == "/tmp/cfg-inventory.json"
+    assert adapter.inventory_json() == pathlib.Path("/tmp/cfg-inventory.json")

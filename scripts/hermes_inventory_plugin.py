@@ -32,24 +32,20 @@ def _hermes_home() -> Path:
         return Path.home() / ".hermes"
 
 
-# Default inventory location (profile-aware, overridable by plugin config or the
-# legacy INVENTORY_JSON env var for backward compatibility).
-DEFAULT_INVENTORY_JSON = _hermes_home() / "inventory.json"
-
-
 def inventory_json() -> Path:
     """Path to the cached inventory, resolved per call.
 
-    Resolution order: legacy INVENTORY_JSON env var (backward compat / tests) ->
-    plugin config (inventory_json / inventory_path) -> profile-aware default.
+    Resolution order: plugin config (inventory_json / inventory_path /
+    INVENTORY_JSON) -> legacy INVENTORY_JSON env var (backward compat / tests) ->
+    profile-aware default.
     """
-    env_val = os.environ.get("INVENTORY_JSON")
-    if env_val:
-        return Path(env_val)
     for key in ("inventory_json", "inventory_path", "INVENTORY_JSON"):
         val = _PLUGIN_CONFIG.get(key)
         if val:
             return Path(val)
+    env_val = os.environ.get("INVENTORY_JSON")
+    if env_val:
+        return Path(env_val)
     return _hermes_home() / "inventory.json"
 
 
@@ -65,7 +61,7 @@ def load_inventory() -> dict | None:
 
 
 def cmd_inventory_where(term: str, as_json: bool = False) -> str:
-    """Tool handler for inventory_where (never raises; every path is a JSON string)."""
+    """Tool handler for inventory_where (never raises; returns JSON when as_json or on error/miss-no-hits, else readable text)."""
     try:
         return _where_impl(term, as_json)
     except Exception as exc:  # noqa: BLE001 - a tool call must never raise
@@ -267,7 +263,8 @@ def register(ctx) -> None:
                 v = ctx.get_config(key, None)
             except Exception:  # noqa: BLE001
                 v = None
-            if v is not None:
+            # Only accept real scalar config values (ignore mocks / None).
+            if isinstance(v, (str, bool, int, float, Path)) and v not in (None, "", False):
                 cfg[key] = v
         _PLUGIN_CONFIG.update(cfg)
     except Exception:  # noqa: BLE001
@@ -313,13 +310,14 @@ def register(ctx) -> None:
     # Exposed via the two tools above; see README for CLI usage.
 
     # Session-start digest (opt-in): env var (backward compat) or plugin config
-    digest_on = os.environ.get("HERMES_INVENTORY_DIGEST") == "1"
-    if not digest_on:
-        for key in ("inventory_digest", "HERMES_INVENTORY_DIGEST", "digest"):
-            v = _PLUGIN_CONFIG.get(key)
-            if v is True or str(v).lower() in ("1", "true", "yes", "on"):
-                digest_on = True
-                break
+    digest_on = False
+    for key in ("inventory_digest", "HERMES_INVENTORY_DIGEST", "digest"):
+        v = _PLUGIN_CONFIG.get(key)
+        if v is True or str(v).lower() in ("1", "true", "yes", "on"):
+            digest_on = True
+            break
+    if not digest_on and os.environ.get("HERMES_INVENTORY_DIGEST") == "1":
+        digest_on = True
     if digest_on:
         print(cmd_inventory_summary(), file=sys.stderr)
 
