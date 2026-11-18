@@ -396,18 +396,39 @@ def parse_fallbacks(bl: list[str]) -> list[dict]:
     out: list[dict] = []
     cur: dict | None = None
     for raw in bl:
+        indent = len(raw) - len(raw.lstrip(" "))
         s = raw.strip()
-        if s.startswith("- provider:"):
-            cur = {"provider": _scalar(s.split(":", 1)[1])}
+        if indent == 2 and s.startswith("- "):
+            cur = {"provider": "", "model": ""}
             out.append(cur)
-        elif cur is not None and s.startswith("model:"):
-            cur["model"] = _scalar(s.split(":", 1)[1])
+            # handle first key on the same line as dash, e.g. "- provider: x"
+            s = s[2:].strip()
+        if cur is None or not s or ":" not in s:
+            continue
+        k, _, v = s.partition(":")
+        k = k.strip()
+        if k in ("provider", "model"):
+            cur[k] = _scalar(v)
     return out
 
 
 def parse_pool_names(bl: list[str]) -> list[str]:
-    return [_scalar(l.strip()[:-1]) for l in bl
-            if (len(l) - len(l.lstrip(" "))) == 2 and l.strip().endswith(":")]
+    out: list[str] = []
+    for l in bl:
+        if (len(l) - len(l.lstrip(" "))) != 2:
+            continue
+        s = l.strip()
+        if not s or ":" not in s:
+            continue
+        if s.endswith(":"):
+            # nested-mapping form: key is everything before trailing colon
+            key = _scalar(s[:-1])
+        else:
+            # inline form: key is text before the FIRST colon
+            key = _scalar(s.split(":", 1)[0])
+        if key:
+            out.append(key)
+    return sorted(out)
 
 
 # Values that name an env var (${VAR}) are safe to show; anything else in a
@@ -467,6 +488,30 @@ def env_key_names(env: Path) -> list[str]:
     return out
 
 
+def env_key_presence(env: Path) -> dict[str, bool]:
+    """Per-key presence flags for credential-ish vars in .env.
+
+    NAME -> True when the variable has a non-empty value, False when the
+    line is present but empty. The VALUE is never read into the result,
+    stored, returned or logged — only its emptiness.
+    """
+    out: dict[str, bool] = {}
+    try:
+        lines = env.read_text(errors="replace").splitlines()
+    except OSError:
+        return out
+    for l in lines:
+        m = ENV_KEY_RE.match(l.strip())
+        if not m:
+            continue
+        name, sep, value = l.partition("=")
+        name = name.strip()
+        if not sep or not name:
+            continue
+        out[name] = bool(value.strip())
+    return out
+
+
 def scan_providers(cfg: Path | None = None, env: Path | None = None) -> dict:
     cfg = cfg or CONFIG
     env = env or (HERMES / ".env")
@@ -487,6 +532,9 @@ def scan_providers(cfg: Path | None = None, env: Path | None = None) -> dict:
         "credential_pools": parse_pool_names(_top_block(lines, "credential_pool_strategies")),
         "custom_providers": parse_custom_providers(_top_block(lines, "custom_providers")),
         "env_key_names": env_key_names(env),
+        "env_key_presence": dict(sorted(env_key_presence(env).items())),
+        "env_available": env.is_file(),
+        "env_error": None if env.is_file() else f"credential env file not found at {env}",
     }
 
 
@@ -917,8 +965,15 @@ def write_files(inv: dict) -> None:
                          f"{c.get('default_model') or c.get('model') or '—'} | "
                          f"`{key}` |")
         L.append("")
-        L.append("API-key env names set: " + (", ".join(
-            f"`{k}`" for k in p["env_key_names"]) or "none"))
+        names = p.get("env_key_names", [])
+        presence = p.get("env_key_presence", {})
+        if names:
+            L.append(f"API-key env names ({len(names)} detected — presence flags only, "
+                     f"values never read): " + ", ".join(
+                         f"`{k}`={'SET' if presence.get(k) else 'UNSET'}" for k in names))
+        else:
+            L.append("API-key env names: none detected"
+                     + (f" — {p['env_error']}" if p.get("env_error") else ""))
 
     # ---- plugins
     L += _sec("Plugins", f"`{HERMES}/plugins/*/plugin.yaml` — local user-space "

@@ -1,6 +1,6 @@
 name: inventory-reminder
-version: 1.0.0
-description: "Live, evidence-backed inventory of this host — repos, skills, MCP servers, CLIs, models and services. Ask 'do I already have X?' and get the cached ground truth instead of a guess."
+version: 1.1.0
+description: "Live, evidence-backed inventory of this host — repos, skills, MCP servers, CLIs, chat-model providers, plugins, cron jobs, profiles, models and services. Ask 'do I already have X?' and get the cached ground truth instead of a guess."
 author: ether-btc
 provides_tools:
   - inventory_where

@@ -212,3 +212,17 @@ def test_summary_includes_new_sections(extra_inventory):
     out = adapter.cmd_inventory_summary()
     for token in ("providers 1", "plugins 1", "cron 58/77", "profiles 18"):
         assert token in out, out
+
+
+def test_hermes_home_fallback_expands_user_and_env_syntax(monkeypatch):
+    """Fallback path expands ~ and $VAR like hermes_constants does."""
+    monkeypatch.delenv("INVENTORY_JSON", raising=False)
+    adapter._PLUGIN_CONFIG.clear()
+    monkeypatch.setitem(sys.modules, "hermes_constants", None)
+    monkeypatch.setenv("HOME", "/tmp/fake-home")
+    monkeypatch.setenv("HERMES_HOME", "$HOME/.hermes-expanded")
+    assert str(adapter.inventory_json()) == "/tmp/fake-home/.hermes-expanded/inventory.json"
+    monkeypatch.setenv("HERMES_HOME", "~/sub/.hermes-expanded")
+    assert str(adapter.inventory_json()) == str(
+        pathlib.Path("/tmp/fake-home") / "sub" / ".hermes-expanded" / "inventory.json"
+    )
