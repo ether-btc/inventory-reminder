@@ -47,12 +47,18 @@ section_count() {
         echo "UNAVAILABLE"; return
     fi
     case "$key" in
-        skills)    jq -r ".$key.names | length" "$file" 2>/dev/null;;
+        # `total` is the same figure the one-line summary prints; `names` also
+        # counts entries the CLI reports but excludes from the total.
+        skills)    jq -r ".$key.total // (.$key.names | length)" "$file" 2>/dev/null;;
         repos)     jq -r ".repos.local // 0" "$file" 2>/dev/null;;
         tools)     jq -r ".tools.mcp_total // 0" "$file" 2>/dev/null;;
         apps)      jq -r ".apps.count // 0" "$file" 2>/dev/null;;
         models)    jq -r ".models.count // 0" "$file" 2>/dev/null;;
         services)  jq -r ".services.count // 0" "$file" 2>/dev/null;;
+        providers) jq -r ".providers.custom_providers | length" "$file" 2>/dev/null;;
+        plugins)   jq -r ".plugins.count // 0" "$file" 2>/dev/null;;
+        cron)      jq -r "\"\(.cron.enabled // 0)/\(.cron.total // 0)\"" "$file" 2>/dev/null;;
+        profiles)  jq -r ".profiles.count // 0" "$file" 2>/dev/null;;
         *)         echo "UNAVAILABLE";;
     esac
 }
@@ -86,6 +92,10 @@ cmd_status() {
         echo "  skills:      $(section_count "$OUT_JSON" skills)"
         echo "  repos:       $(section_count "$OUT_JSON" repos)"
         echo "  MCP servers: $(section_count "$OUT_JSON" tools)"
+        echo "  providers:   $(section_count "$OUT_JSON" providers)"
+        echo "  plugins:     $(section_count "$OUT_JSON" plugins)"
+        echo "  cron:        $(section_count "$OUT_JSON" cron)"
+        echo "  profiles:    $(section_count "$OUT_JSON" profiles)"
         echo "  packages:    $(section_count "$OUT_JSON" apps)"
         echo "  models:      $(section_count "$OUT_JSON" models)"
         echo "  services:    $(section_count "$OUT_JSON" services)"
@@ -152,6 +162,10 @@ cmd_run() {
         echo "  skills:      $(section_count "$OUT_JSON" skills)"
         echo "  repos:       $(section_count "$OUT_JSON" repos)"
         echo "  MCP servers: $(section_count "$OUT_JSON" tools)"
+        echo "  providers:   $(section_count "$OUT_JSON" providers)"
+        echo "  plugins:     $(section_count "$OUT_JSON" plugins)"
+        echo "  cron:        $(section_count "$OUT_JSON" cron)"
+        echo "  profiles:    $(section_count "$OUT_JSON" profiles)"
         echo "  packages:    $(section_count "$OUT_JSON" apps)"
         echo "  models:      $(section_count "$OUT_JSON" models)"
         echo "  services:    $(section_count "$OUT_JSON" services)"
