@@ -713,8 +713,8 @@ def write_files(inv: dict) -> None:
             L.append(f"| `{name}` | {('`' + path + '`') if path else '**absent**'} |")
 
     # ---- providers
-    L += _sec("Providers", f"Source: `{p['config']}` if available; key NAMES "
-                           "only from `~/.hermes/.env` (values never leave the "
+    L += _sec("Providers", "Source: `~/.hermes/config.yaml`; key NAMES only "
+                           "from `~/.hermes/.env` (values never leave the "
                            "process).")
     if not p.get("available"):
         L.append(f"UNAVAILABLE — {p['error']}")
