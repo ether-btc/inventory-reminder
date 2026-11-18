@@ -148,6 +148,75 @@ def _where_impl(term: str, as_json: bool = False) -> str:
                     "detail": path or "**absent**"
                 })
 
+    # providers — custom providers, their model ids, aliases
+    pr = inv.get("providers", {})
+    if pr.get("available"):
+        for c in pr.get("custom_providers", []):
+            if term_l in c.get("name", "").lower():
+                hits.append({
+                    "section": "providers",
+                    "item": c["name"],
+                    "detail": f"{c.get('base_url', '—')} → "
+                              f"{c.get('default_model') or c.get('model') or '—'}"
+                })
+            for mid in c.get("models", []):
+                if term_l in mid.lower():
+                    hits.append({
+                        "section": "provider_models",
+                        "item": mid,
+                        "detail": f"custom provider `{c['name']}`"
+                    })
+        for ak, av in pr.get("aliases", {}).items():
+            if term_l in ak.lower() or term_l in av.lower():
+                hits.append({
+                    "section": "provider_aliases",
+                    "item": ak,
+                    "detail": av
+                })
+
+    # plugins — names and tool names
+    plg = inv.get("plugins", {})
+    if plg.get("available"):
+        for pg in plg.get("plugins", []):
+            if term_l in pg.get("name", "").lower():
+                hits.append({
+                    "section": "plugins",
+                    "item": pg["name"],
+                    "detail": f"{pg.get('version', '?')} ({pg.get('kind', '?')})"
+                })
+            for tool in pg.get("tools", []):
+                if term_l in tool.lower():
+                    hits.append({
+                        "section": "plugins",
+                        "item": tool,
+                        "detail": f"tool of plugin `{pg['name']}`"
+                    })
+
+    # cron jobs — names and schedules
+    crn = inv.get("cron", {})
+    if crn.get("available"):
+        for j in crn.get("jobs", []):
+            if term_l in j.get("name", "").lower() or \
+                    term_l in (j.get("schedule") or "").lower():
+                hits.append({
+                    "section": "cron_jobs",
+                    "item": j["name"],
+                    "detail": f"`{j.get('schedule', '—')}` "
+                              f"{'on' if j.get('enabled') else 'off'}"
+                })
+
+    # profiles — names
+    pfs = inv.get("profiles", {})
+    if pfs.get("available"):
+        for pr_ in pfs.get("profiles", []):
+            if term_l in pr_["name"].lower():
+                hits.append({
+                    "section": "profiles",
+                    "item": pr_["name"],
+                    "detail": f"{pr_['skills']} skills, "
+                              f"cron {pr_['cron_enabled']}/{pr_['cron_total']}"
+                })
+
     # models
     m = inv.get("models", {})
     if m.get("available"):
@@ -186,7 +255,9 @@ def _where_impl(term: str, as_json: bool = False) -> str:
 
     section_order = [
         "skills", "repos_owned", "repos_foreign",
-        "mcp_servers", "cli_tools", "models", "key_packages"
+        "mcp_servers", "cli_tools", "providers", "provider_models",
+        "provider_aliases", "plugins", "cron_jobs", "profiles", "models",
+        "key_packages"
     ]
     section_labels = {
         "skills": "SKILLS",
@@ -194,6 +265,12 @@ def _where_impl(term: str, as_json: bool = False) -> str:
         "repos_foreign": "REPOS (foreign)",
         "mcp_servers": "MCP SERVERS",
         "cli_tools": "CLI TOOLS",
+        "providers": "PROVIDERS",
+        "provider_models": "PROVIDER MODELS",
+        "provider_aliases": "PROVIDER ALIASES",
+        "plugins": "PLUGINS",
+        "cron_jobs": "CRON JOBS",
+        "profiles": "PROFILES",
         "models": "MODELS",
         "key_packages": "KEY PACKAGES",
     }
@@ -239,6 +316,18 @@ def _summary_impl() -> str:
         parts.append(f"mcp {len(t.get('mcp_enabled', []))}/{t.get('mcp_total', '?')}")
     else:
         parts.append("mcp N/A")
+    p = inv.get("providers", {})
+    if p.get("available"):
+        parts.append(f"providers {len(p.get('custom_providers', []))}")
+    pl = inv.get("plugins", {})
+    if pl.get("available"):
+        parts.append(f"plugins {pl.get('count', '?')}")
+    cr = inv.get("cron", {})
+    if cr.get("available"):
+        parts.append(f"cron {cr.get('enabled', '?')}/{cr.get('total', '?')}")
+    pf = inv.get("profiles", {})
+    if pf.get("available"):
+        parts.append(f"profiles {pf.get('count', '?')}")
     if a.get("available"):
         parts.append(f"pkgs {a['count']}")
     else:

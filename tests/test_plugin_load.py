@@ -138,3 +138,77 @@ def test_register_reads_plugin_config(monkeypatch):
     adapter.register(ctx)
     assert adapter._PLUGIN_CONFIG.get("inventory_json") == "/tmp/cfg-inventory.json"
     assert adapter.inventory_json() == pathlib.Path("/tmp/cfg-inventory.json")
+
+
+# --- where/summary must cover the provider/plugin/cron/profile sections ---
+
+_EXTRA_INV = {
+    "generated_at": "2026-11-18T20:29:00+01:00",
+    "repos": {"available": True, "owned_total": 161, "local": 30,
+              "online_only": 131},
+    "skills": {"available": True, "total": 340, "by_source": {"local": 308}},
+    "tools": {"available": True, "mcp_total": 5, "mcp_enabled": ["a", "b", "c"]},
+    "providers": {
+        "available": True,
+        "custom_providers": [
+            {"name": "deepseek", "default_model": "deepseek-flash",
+             "models": ["deepseek-flash"], "base_url": "https://api.deepseek.invalid"},
+        ],
+        "aliases": {"sb": "openrouter/test/space-bunny"},
+    },
+    "plugins": {"available": True, "count": 1, "plugins": [
+        {"name": "gliformer", "version": "1.0.0", "kind": "backend",
+         "tools": ["gliformer_embed_text"]}]},
+    "cron": {"available": True, "total": 77, "enabled": 58, "jobs": [
+        {"name": "hermes-health-watchdog", "schedule": "0 9,21 * * *",
+         "enabled": True, "last_status": "ok"}]},
+    "profiles": {"available": True, "count": 18, "total_skills": 1208,
+                 "profiles": [{"name": "reviewer", "skills": 279,
+                               "cron_total": 0, "cron_enabled": 0}]},
+    "apps": {"available": True, "count": 142, "key_packages": {}},
+    "models": {"available": True, "count": 6, "total_size": "4.1G", "models": []},
+    "services": {"available": True, "count": 0, "running_total": 19, "services": []},
+}
+
+
+@pytest.fixture
+def extra_inventory(tmp_path, monkeypatch):
+    p = tmp_path / "inventory.json"
+    p.write_text(json.dumps(_EXTRA_INV))
+    monkeypatch.setenv("INVENTORY_JSON", str(p))
+    adapter._PLUGIN_CONFIG.clear()
+    yield p
+    adapter._PLUGIN_CONFIG.clear()
+
+
+def _hits(term):
+    return json.loads(adapter.cmd_inventory_where(term, as_json=True))["hits"]
+
+
+def test_where_finds_custom_provider(extra_inventory):
+    assert any(h["section"] == "providers" and h["item"] == "deepseek"
+               for h in _hits("deepseek"))
+
+
+def test_where_finds_provider_alias(extra_inventory):
+    assert any(h["section"] == "provider_aliases" for h in _hits("sb"))
+
+
+def test_where_finds_plugin_and_tool(extra_inventory):
+    secs = {h["item"] for h in _hits("gliformer")}
+    assert {"gliformer", "gliformer_embed_text"} <= secs
+
+
+def test_where_finds_cron_job(extra_inventory):
+    assert any(h["section"] == "cron_jobs" for h in _hits("watchdog"))
+
+
+def test_where_finds_profile(extra_inventory):
+    hits = _hits("reviewer")
+    assert any(h["section"] == "profiles" and h["item"] == "reviewer" for h in hits)
+
+
+def test_summary_includes_new_sections(extra_inventory):
+    out = adapter.cmd_inventory_summary()
+    for token in ("providers 1", "plugins 1", "cron 58/77", "profiles 18"):
+        assert token in out, out

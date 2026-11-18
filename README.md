@@ -16,7 +16,7 @@ The system closes that loop with three read-only scanners and one digest:
 | Piece | What it answers |
 |---|---|
 | `repo-inventory.py` | Which of my GitHub repos are LOCAL (cloned here) vs ONLINE-ONLY (on GitHub, intentionally off-disk)? `where <name>` gives a one-shot lookup + ready clone command. |
-| `system-inventory.py` | Which skills, MCP servers, CLIs, Python packages, local models and systemd services does this host actually have RIGHT NOW? `where <term>` searches all sections at once. |
+| `system-inventory.py` | Which skills, MCP servers, CLIs, chat-model providers, plugins, cron jobs, profiles, Python packages, local models and systemd services does this host actually have RIGHT NOW? `where <term>` searches all sections at once. |
 | `refresh.sh` | The pipeline: repo scan → system scan → drift check → one-line summary. Wire it to cron via `setup-host.sh`. |
 
 ## Guarantees
@@ -32,6 +32,7 @@ The system closes that loop with three read-only scanners and one digest:
   (the timestamp lives in `generated_at` only).
 - **Drift gate.** `--check` compares live state to the last written inventory
   and exits 1 on drift (new/gone skills, models, MCP toggles, CLI changes,
+  provider/plugin/cron/profile membership and version or enable changes,
   service changes, repo count/status changes) — cron/monitor friendly.
 - **Stdlib only.** No dependencies to install; Python 3.9+.
 
@@ -73,7 +74,7 @@ they work out of the box.
 Both scanners expose a `where` subcommand for fast lookups:
 
 ```bash
-# system-inventory.py — searches ALL sections (skills, repos, MCP, CLIs, models, key packages)
+# system-inventory.py — searches ALL sections (skills, repos, MCP, CLIs, providers, plugins, cron, profiles, models, key packages)
 system-inventory.py where <term> [--config PATH] [--json]
 
 # repo-inventory.py — searches owned + foreign repos only
@@ -107,8 +108,8 @@ It registers two tools:
 
 | Tool | What it answers |
 |---|---|
-| `inventory_where(term, json=false)` | "Do I already have X?" — substring search across every section of the cached digest (skills, owned repos, foreign clones, MCP servers, CLIs, models, key packages), with a ready detail line per hit. |
-| `inventory_summary()` | One-line digest for session bootstrap: `INVENTORY <stamp> \| repos 156 (25L/131O) \| skills 475 \| mcp 3/5 \| …` |
+| `inventory_where(term, json=false)` | "Do I already have X?" — substring search across every section of the cached digest (skills, owned repos, foreign clones, MCP servers, CLIs, providers, plugins, cron jobs, profiles, models, key packages), with a ready detail line per hit. |
+| `inventory_summary()` | One-line digest for session bootstrap: `INVENTORY <stamp> \| repos 161 (30L/131O) \| skills 340 \| mcp 3/5 \| providers 8 \| plugins 19 \| cron 58/77 \| …` |
 
 Real output from this host:
 
