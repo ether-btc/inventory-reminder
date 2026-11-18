@@ -16,6 +16,8 @@ Categories, each from its own source of truth:
   skills    `hermes skills list` (parsed; COLUMNS is widened so names do not
             come back truncated with "…")
   tools     MCP servers from ~/.hermes/config.yaml + key CLIs via which()
+  providers chat model wiring: default provider/model, aliases, fallbacks,
+            custom_providers, .env key NAMES (values never read)
   apps      `pip list` inside the hermes venv
   models    *.gguf under the llama-cpp + mnemosyne model dirs
   services  `systemctl list-units --type=service --state=running`, filtered
@@ -339,6 +341,151 @@ def scan_tools() -> dict:
     return d
 
 
+# providers — chat model/provider wiring from config.yaml + .env key NAMES
+# --------------------------------------------------------------------------
+def _top_block(lines: list[str], key: str) -> list[str]:
+    """Lines of the top-level `key:` block (until the next top-level key)."""
+    start = None
+    for i, l in enumerate(lines):
+        if re.match(rf"^{key}:\s*(#.*)?$", l):
+            start = i + 1
+            break
+    if start is None:
+        return []
+    out: list[str] = []
+    for raw in lines[start:]:
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        if not raw[0].isspace():
+            break  # next top-level key
+        out.append(raw)
+    return out
+
+
+def _scalar(s: str) -> str:
+    return s.strip().strip("'\"")
+
+
+def parse_model_block(bl: list[str]) -> tuple[dict, dict]:
+    """(scalars, aliases) from the top-level `model:` block."""
+    d: dict = {}
+    aliases: dict = {}
+    in_aliases = False
+    for raw in bl:
+        indent = len(raw) - len(raw.lstrip(" "))
+        if indent <= 2:
+            in_aliases = False
+            k, _, v = raw.strip().partition(":")
+            v = _scalar(v)
+            if v:
+                d[k] = v
+            elif k == "aliases":
+                in_aliases = True
+        elif indent >= 4 and in_aliases:
+            k, _, v = raw.strip().partition(":")
+            if k.strip():
+                aliases[k.strip()] = _scalar(v)
+    return d, aliases
+
+
+def parse_fallbacks(bl: list[str]) -> list[dict]:
+    out: list[dict] = []
+    cur: dict | None = None
+    for raw in bl:
+        s = raw.strip()
+        if s.startswith("- provider:"):
+            cur = {"provider": _scalar(s.split(":", 1)[1])}
+            out.append(cur)
+        elif cur is not None and s.startswith("model:"):
+            cur["model"] = _scalar(s.split(":", 1)[1])
+    return out
+
+
+def parse_pool_names(bl: list[str]) -> list[str]:
+    return [_scalar(l.strip()[:-1]) for l in bl
+            if (len(l) - len(l.lstrip(" "))) == 2 and l.strip().endswith(":")]
+
+
+# Values that name an env var (${VAR}) are safe to show; anything else in a
+# key slot is treated as a secret and never leaves the process unredacted.
+# `key_env` fields name an env var by definition, so they stay visible.
+_SECRET_FIELDS = ("api_key", "key", "token")
+
+
+def _safe_val(k: str, v: str) -> str:
+    v = _scalar(v)
+    if k in _SECRET_FIELDS and not v.startswith("${"):
+        return "REDACTED"
+    return v
+
+
+def parse_custom_providers(bl: list[str]) -> list[dict]:
+    out: list[dict] = []
+    cur: dict | None = None
+    in_models = False
+    for raw in bl:
+        indent = len(raw) - len(raw.lstrip(" "))
+        s = raw.strip()
+        if indent <= 2:
+            in_models = False
+            if s.startswith("- name:"):
+                cur = {"name": _scalar(s.split(":", 1)[1])}
+                out.append(cur)
+            continue
+        if cur is None:
+            continue
+        if indent == 4:
+            in_models = False
+            if s == "models:":
+                in_models = True
+            elif ":" in s:
+                k, _, v = s.partition(":")
+                cur[k.strip()] = _safe_val(k.strip(), v)
+        elif indent >= 6 and in_models and s.endswith(": {}"):
+            cur.setdefault("models", []).append(s.split(":", 1)[0].strip())
+    return out
+
+
+ENV_KEY_RE = re.compile(r"(?i)^([A-Z_]*(?:API_KEY|_KEY|TOKEN|APIKEY)[A-Z_0-9]*)\s*=")
+
+
+def env_key_names(env: Path) -> list[str]:
+    """Names only (never values) of API-key-style variables set in .env."""
+    try:
+        lines = env.read_text(errors="replace").splitlines()
+    except OSError:
+        return []
+    out: list[str] = []
+    for l in lines:
+        m = ENV_KEY_RE.match(l.strip())
+        if m and m.group(1) not in out:
+            out.append(m.group(1))
+    return out
+
+
+def scan_providers(cfg: Path | None = None, env: Path | None = None) -> dict:
+    cfg = cfg or CONFIG
+    env = env or (HERMES / ".env")
+    try:
+        lines = cfg.read_text(errors="replace").splitlines()
+    except Exception as e:  # noqa: BLE001
+        return unavailable(f"cannot read {cfg}: {e}")
+    model, aliases = parse_model_block(_top_block(lines, "model"))
+    return {
+        "available": True,
+        "config": str(cfg),
+        "default_model": model.get("default", ""),
+        "default_provider": model.get("provider", ""),
+        "base_url": model.get("base_url", ""),
+        "api_key_env": _safe_val("api_key_env", model.get("api_key", "")),
+        "aliases": aliases,
+        "fallback_providers": parse_fallbacks(_top_block(lines, "fallback_providers")),
+        "credential_pools": parse_pool_names(_top_block(lines, "credential_pool_strategies")),
+        "custom_providers": parse_custom_providers(_top_block(lines, "custom_providers")),
+        "env_key_names": env_key_names(env),
+    }
+
+
 # --------------------------------------------------------------------------
 # apps — pip list inside the hermes venv
 # --------------------------------------------------------------------------
@@ -437,6 +584,7 @@ def build() -> dict:
         "repos": scan_repos(),
         "skills": scan_skills(),
         "tools": scan_tools(),
+        "providers": scan_providers(),
         "apps": scan_apps(),
         "models": scan_models(),
         "services": scan_services(),
@@ -468,8 +616,9 @@ def write_files(inv: dict) -> None:
     L.append("")
 
     # ---- one-line totals
-    r, s, t, a, m, sv = (inv["repos"], inv["skills"], inv["tools"],
-                         inv["apps"], inv["models"], inv["services"])
+    r, s, t, p, a, m, sv = (inv["repos"], inv["skills"], inv["tools"],
+                            inv["providers"], inv["apps"], inv["models"],
+                            inv["services"])
     bits = []
     if r.get("available"):
         bits.append(f"{r['owned_total']} repos ({r['local']} local / {r['online_only']} online-only)")
@@ -477,6 +626,8 @@ def write_files(inv: dict) -> None:
         bits.append(f"{s['total']} skills")
     if t.get("available"):
         bits.append(f"{t['mcp_total']} MCP servers")
+    if p.get("available"):
+        bits.append(f"{len(p['custom_providers'])} custom providers")
     if a.get("available"):
         bits.append(f"{a['count']} python packages")
     if m.get("available"):
@@ -560,6 +711,39 @@ def write_files(inv: dict) -> None:
         L.append("|---|---|")
         for name, path in t["cli_tools"].items():
             L.append(f"| `{name}` | {('`' + path + '`') if path else '**absent**'} |")
+
+    # ---- providers
+    L += _sec("Providers", f"Source: `{p['config']}` if available; key NAMES "
+                           "only from `~/.hermes/.env` (values never leave the "
+                           "process).")
+    if not p.get("available"):
+        L.append(f"UNAVAILABLE — {p['error']}")
+    else:
+        L.append(f"- Default: **{p['default_provider']}** · model "
+                 f"`{p['default_model']}` · `{p['base_url']}` "
+                 f"(key ref: `{p['api_key_env']}`)")
+        if p["aliases"]:
+            L.append("- Aliases: " + ", ".join(
+                f"`{k}→{v}`" for k, v in sorted(p["aliases"].items())))
+        if p["fallback_providers"]:
+            L.append("- Fallback chain: " + " → ".join(
+                f"{f['provider']}/{f.get('model', '?')}"
+                for f in p["fallback_providers"]))
+        if p["credential_pools"]:
+            L.append("- Credential pools: " + ", ".join(
+                f"`{k}`" for k in p["credential_pools"]))
+        if p["custom_providers"]:
+            L.append("")
+            L.append("| custom provider | base_url | default model | key |")
+            L.append("|---|---|---|---|")
+            for c in p["custom_providers"]:
+                key = c.get("key_env") or c.get("api_key") or "REDACTED"
+                L.append(f"| `{c['name']}` | {c.get('base_url', '—')} | "
+                         f"{c.get('default_model') or c.get('model') or '—'} | "
+                         f"`{key}` |")
+        L.append("")
+        L.append("API-key env names set: " + (", ".join(
+            f"`{k}`" for k in p["env_key_names"]) or "none"))
 
     # ---- apps
     L += _sec("Apps", f"`pip list` inside `{VENV}`.")
@@ -699,8 +883,9 @@ def cmd_check(inv: dict) -> int:
 
 
 def cmd_summary(inv: dict) -> int:
-    r, s, t, a, m, sv = (inv["repos"], inv["skills"], inv["tools"],
-                         inv["apps"], inv["models"], inv["services"])
+    r, s, t, p, a, m, sv = (inv["repos"], inv["skills"], inv["tools"],
+                            inv["providers"], inv["apps"], inv["models"],
+                            inv["services"])
     parts = []
     if r.get("available"):
         parts.append(f"repos {r['owned_total']} ({r['local']}L/{r['online_only']}O)")
@@ -715,6 +900,8 @@ def cmd_summary(inv: dict) -> int:
         parts.append(f"mcp {t['mcp_enabled'].__len__()}/{t['mcp_total']}")
     else:
         parts.append("mcp N/A")
+    if p.get("available"):
+        parts.append(f"providers {len(p['custom_providers'])}")
     if a.get("available"):
         parts.append(f"pkgs {a['count']}")
     else:
@@ -794,6 +981,32 @@ def cmd_where(term: str, as_json: bool = False) -> int:
                     "detail": path or "**absent**"
                 })
 
+    # providers — custom provider names, aliases, model ids
+    pr = inv.get("providers", {})
+    if pr.get("available"):
+        for c in pr.get("custom_providers", []):
+            if term_l in c.get("name", "").lower():
+                hits.append({
+                    "section": "providers",
+                    "item": c["name"],
+                    "detail": f"{c.get('base_url', '—')} → "
+                              f"{c.get('default_model') or c.get('model') or '—'}"
+                })
+            for mid in c.get("models", []):
+                if term_l in mid.lower():
+                    hits.append({
+                        "section": "provider_models",
+                        "item": mid,
+                        "detail": f"custom provider `{c['name']}`"
+                    })
+        for ak, av in pr.get("aliases", {}).items():
+            if term_l in ak.lower() or term_l in av.lower():
+                hits.append({
+                    "section": "provider_aliases",
+                    "item": ak,
+                    "detail": av
+                })
+
     # models
     m = inv.get("models", {})
     if m.get("available"):
@@ -834,7 +1047,8 @@ def cmd_where(term: str, as_json: bool = False) -> int:
 
     section_order = [
         "skills", "repos_owned", "repos_foreign",
-        "mcp_servers", "cli_tools", "models", "key_packages"
+        "mcp_servers", "cli_tools", "providers", "provider_models",
+        "provider_aliases", "models", "key_packages"
     ]
     section_labels = {
         "skills": "SKILLS",
@@ -842,6 +1056,9 @@ def cmd_where(term: str, as_json: bool = False) -> int:
         "repos_foreign": "REPOS (foreign)",
         "mcp_servers": "MCP SERVERS",
         "cli_tools": "CLI TOOLS",
+        "providers": "PROVIDERS",
+        "provider_models": "PROVIDER MODELS",
+        "provider_aliases": "PROVIDER ALIASES",
         "models": "MODELS",
         "key_packages": "KEY PACKAGES",
     }

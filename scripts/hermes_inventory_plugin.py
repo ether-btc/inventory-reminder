@@ -29,6 +29,11 @@ def _hermes_home() -> Path:
 
         return Path(get_hermes_home())
     except Exception:  # noqa: BLE001
+        # hermes_constants not importable (standalone plugin env): still honor
+        # HERMES_HOME so tests and embedded runs see the right tree.
+        env = os.environ.get("HERMES_HOME", "").strip()
+        if env:
+            return Path(env)
         return Path.home() / ".hermes"
 
 
