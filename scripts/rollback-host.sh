@@ -52,6 +52,22 @@ for f in "$OUT_JSON" "$OUT_MD"; do
     fi
 done
 
+# 3b. Deployed scanners — restore the newest backup, else remove
+while IFS= read -r SCAN; do
+    [[ -z "$SCAN" || ! -f "$SCAN" ]] && continue
+    LATEST_BAK=$(ls -1t "${SCAN}.bak-"* 2>/dev/null | head -1 || true)
+    if [[ -n "$LATEST_BAK" ]]; then
+        cp "$LATEST_BAK" "$SCAN"
+        rm -f "$LATEST_BAK"
+        echo "  restored $SCAN from backup ($LATEST_BAK)"
+        restored=1
+    else
+        rm -f "$SCAN"
+        echo "  removed $SCAN (no prior backup to restore from)"
+        removed=1
+    fi
+done < <(jq -r '.scanners[]? // empty' "$INSTALL_STATE" 2>/dev/null)
+
 # 4. Remove config file
 if [[ -f "$CONFIG_DST" ]]; then
     rm -f "$CONFIG_DST"

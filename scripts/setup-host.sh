@@ -41,14 +41,31 @@ else
     echo "  refresh script already current"
 fi
 
+# 2b. Scanners — refresh.sh executes $(dirname $0)/*.py, so the live copies must
+# track the repo or the pipeline silently runs stale probing code.
+SCRIPT_DIR_DST="$HOME/.hermes/scripts"
+for SCANNER in system-inventory.py repo-inventory.py; do
+    SRC="$REPO_DIR/scripts/$SCANNER"
+    DST="$SCRIPT_DIR_DST/$SCANNER"
+    if [[ ! -f "$DST" ]] || ! cmp -s "$SRC" "$DST"; then
+        [[ -f "$DST" ]] && cp "$DST" "${DST}.bak-$(date +%Y%m%d-%H%M%S)"
+        cp "$SRC" "$DST"
+        echo "  deployed scanner $DST (repo version)"
+    else
+        echo "  scanner $SCANNER already current"
+    fi
+done
+
 # 3. Record install state (pins repo dir for rollback)
+SCANNERS_JSON=$(printf '%s\n' "$SCRIPT_DIR_DST/system-inventory.py" "$SCRIPT_DIR_DST/repo-inventory.py" | jq -R . | jq -s .)
 cat > "$INSTALL_STATE" <<EOF
 {
   "repo_dir": "$REPO_DIR",
   "installed_at": "$(date -Iseconds)",
   "config_dst": "$CONFIG_DST",
   "refresh_dst": "$REFRESH_DST",
-  "refresh_bak": "${REFRESH_DST}.bak"
+  "refresh_bak": "${REFRESH_DST}.bak",
+  "scanners": $SCANNERS_JSON
 }
 EOF
 echo "  recorded install state at $INSTALL_STATE"
