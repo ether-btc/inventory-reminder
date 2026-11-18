@@ -18,6 +18,9 @@ Categories, each from its own source of truth:
   tools     MCP servers from ~/.hermes/config.yaml + key CLIs via which()
   providers chat model wiring: default provider/model, aliases, fallbacks,
             custom_providers, .env key NAMES (values never read)
+  plugins   ~/.hermes/plugins/*/plugin.yaml: name, version, kind, tools
+  cron      ~/.hermes/cron/jobs.json: schedule, enabled, last status,
+            needs-attention list
   apps      `pip list` inside the hermes venv
   models    *.gguf under the llama-cpp + mnemosyne model dirs
   services  `systemctl list-units --type=service --state=running`, filtered
@@ -487,6 +490,107 @@ def scan_providers(cfg: Path | None = None, env: Path | None = None) -> dict:
 
 
 # --------------------------------------------------------------------------
+# plugins — ~/.hermes/plugins/*/plugin.yaml (name/version/kind/tools)
+# --------------------------------------------------------------------------
+def _yaml_scalar(s: str) -> str:
+    return _scalar(s)
+
+
+def scan_plugins(plugins_dir: Path | None = None) -> dict:
+    plugins_dir = plugins_dir or (HERMES / "plugins")
+    if not plugins_dir.is_dir():
+        return unavailable(f"no plugins dir at {plugins_dir}")
+    out: list[dict] = []
+    for d in sorted(p for p in plugins_dir.iterdir() if p.is_dir()):
+        y = d / "plugin.yaml"
+        if not y.is_file():
+            continue
+        try:
+            lines = y.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        meta: dict = {}
+        tools: list[str] = []
+        in_tools = False
+        for raw in lines:
+            s = raw.strip()
+            if not s or s.startswith("#"):
+                continue
+            indent = len(raw) - len(raw.lstrip(" "))
+            if indent == 0:
+                in_tools = False
+                if ":" in s:
+                    k, _, v = s.partition(":")
+                    k, v = k.strip(), _yaml_scalar(v)
+                    if k == "provides_tools" and not v:
+                        in_tools = True
+                    elif v:
+                        meta[k] = v
+            elif in_tools and s.startswith("- "):
+                tools.append(_yaml_scalar(s[2:]))
+        desc = meta.get("description", "")
+        if len(desc) > 110:
+            desc = desc[:107].rstrip() + "…"
+        out.append({
+            "dir": d.name,
+            "name": meta.get("name", d.name),
+            "version": meta.get("version", ""),
+            "kind": meta.get("kind", ""),
+            "description": desc,
+            "tools": tools,
+        })
+    return {"available": True, "dir": str(plugins_dir),
+            "count": len(out), "plugins": out}
+
+
+# --------------------------------------------------------------------------
+# cron — ~/.hermes/cron/jobs.json (name/schedule/enabled/last status)
+# --------------------------------------------------------------------------
+def scan_cron(cron_dir: Path | None = None) -> dict:
+    cron_dir = cron_dir or (HERMES / "cron")
+    jf = cron_dir / "jobs.json"
+    try:
+        data = json.loads(jf.read_text())
+    except Exception as e:  # noqa: BLE001
+        return unavailable(f"cannot read {jf}: {e}")
+    if isinstance(data, dict):
+        jobs = data.get("jobs", [])
+    else:
+        jobs = data if isinstance(data, list) else []
+    jobs = [j for j in jobs if isinstance(j, dict)]
+    rows: list[dict] = []
+    for j in jobs:
+        sch = j.get("schedule") or {}
+        rows.append({
+            "name": j.get("name", j.get("id", "?")),
+            "id": j.get("id", ""),
+            "schedule": sch.get("display") or sch.get("expr") or "",
+            "kind": sch.get("kind", ""),
+            "enabled": bool(j.get("enabled")),
+            "last_status": j.get("last_status"),
+            "failure_streak": j.get("failure_streak", 0) or 0,
+            "last_run_at": j.get("last_run_at"),
+            "next_run_at": j.get("next_run_at"),
+            "deliver": j.get("deliver", ""),
+        })
+    by_status: dict[str, int] = {}
+    for r in rows:
+        k = r["last_status"] or "never"
+        by_status[k] = by_status.get(k, 0) + 1
+    attention = [r["name"] for r in rows
+                 if r["enabled"] and r["last_status"] not in (None, "ok")]
+    return {
+        "available": True,
+        "jobs_file": str(jf),
+        "total": len(rows),
+        "enabled": sum(1 for r in rows if r["enabled"]),
+        "by_status": by_status,
+        "needs_attention": attention,
+        "jobs": rows,
+    }
+
+
+# --------------------------------------------------------------------------
 # apps — pip list inside the hermes venv
 # --------------------------------------------------------------------------
 def scan_apps() -> dict:
@@ -585,6 +689,8 @@ def build() -> dict:
         "skills": scan_skills(),
         "tools": scan_tools(),
         "providers": scan_providers(),
+        "plugins": scan_plugins(),
+        "cron": scan_cron(),
         "apps": scan_apps(),
         "models": scan_models(),
         "services": scan_services(),
@@ -619,6 +725,7 @@ def write_files(inv: dict) -> None:
     r, s, t, p, a, m, sv = (inv["repos"], inv["skills"], inv["tools"],
                             inv["providers"], inv["apps"], inv["models"],
                             inv["services"])
+    pl, cr = inv["plugins"], inv["cron"]
     bits = []
     if r.get("available"):
         bits.append(f"{r['owned_total']} repos ({r['local']} local / {r['online_only']} online-only)")
@@ -628,6 +735,12 @@ def write_files(inv: dict) -> None:
         bits.append(f"{t['mcp_total']} MCP servers")
     if p.get("available"):
         bits.append(f"{len(p['custom_providers'])} custom providers")
+    if pl.get("available"):
+        bits.append(f"{pl['count']} plugins")
+    if cr.get("available"):
+        bits.append(f"cron {cr['enabled']}/{cr['total']} on"
+                    + (f", {len(cr['needs_attention'])} need attention"
+                       if cr["needs_attention"] else ""))
     if a.get("available"):
         bits.append(f"{a['count']} python packages")
     if m.get("available"):
@@ -745,6 +858,48 @@ def write_files(inv: dict) -> None:
         L.append("API-key env names set: " + (", ".join(
             f"`{k}`" for k in p["env_key_names"]) or "none"))
 
+    # ---- plugins
+    L += _sec("Plugins", f"`{HERMES}/plugins/*/plugin.yaml` — local user-space "
+                         "extensions (bundled plugins excluded).")
+    if not pl.get("available"):
+        L.append(f"UNAVAILABLE — {pl['error']}")
+    else:
+        L.append(f"**{pl['count']} local plugins.**")
+        L.append("")
+        L.append("| plugin | version | kind | tools | description |")
+        L.append("|---|---|---|---|---|")
+        for pg in pl["plugins"]:
+            ntools = len(pg["tools"]) or "—"
+            L.append(f"| `{pg['name']}` | {pg['version'] or '—'} | "
+                     f"{pg['kind'] or '—'} | {ntools} | {pg['description'] or '—'} |")
+
+    # ---- cron
+    L += _sec("Automation (cron)", f"`{HERMES}/cron/jobs.json` — the full job "
+                                   "fleet with schedule, enable state and last "
+                                   "run status.")
+    if not cr.get("available"):
+        L.append(f"UNAVAILABLE — {cr['error']}")
+    else:
+        st = ", ".join(f"{k} {v}" for k, v in sorted(cr["by_status"].items()))
+        L.append(f"**{cr['total']} jobs · {cr['enabled']} enabled** — last "
+                 f"status: {st}.")
+        if cr["needs_attention"]:
+            L.append("")
+            L.append("Needs attention (enabled but last run not ok): "
+                     + ", ".join(f"`{n}`" for n in cr["needs_attention"]))
+        L.append("")
+        L.append("| job | schedule | on | last status | last run |")
+        L.append("|---|---|---|---|---|")
+        ordered = ([j for j in cr["jobs"]
+                    if j["enabled"] and j["last_status"] not in (None, "ok")]
+                   + [j for j in cr["jobs"]
+                      if not (j["enabled"] and j["last_status"] not in (None, "ok"))])
+        for j in ordered:
+            L.append(f"| `{j['name']}` | `{j['schedule'] or '—'}` | "
+                     f"{'on' if j['enabled'] else 'off'} | "
+                     f"{j['last_status'] or 'never'} | "
+                     f"{(j['last_run_at'] or '—')[:16]} |")
+
     # ---- apps
     L += _sec("Apps", f"`pip list` inside `{VENV}`.")
     if not a.get("available"):
@@ -845,6 +1000,26 @@ def cmd_check(inv: dict) -> int:
         for x in sorted(op - np_):
             drift.append(f"GONE-CLI: {x} no longer on PATH")
 
+    # plugins — membership + version changes
+    o, n = old.get("plugins", {}), inv["plugins"]
+    if o.get("available") and n.get("available"):
+        opg = {pg["name"]: pg.get("version") for pg in o.get("plugins", [])}
+        npg = {pg["name"]: pg.get("version") for pg in n.get("plugins", [])}
+        diff_sets("PLUGIN", list(opg), list(npg))
+        for k in sorted(set(opg) & set(npg)):
+            if opg[k] != npg[k]:
+                drift.append(f"PLUGIN-VERSION: {k} {opg[k]} -> {npg[k]}")
+
+    # cron — membership + enabled toggles (status churn is not drift)
+    o, n = old.get("cron", {}), inv["cron"]
+    if o.get("available") and n.get("available"):
+        oj = {j["name"]: j["enabled"] for j in o.get("jobs", [])}
+        nj = {j["name"]: j["enabled"] for j in n.get("jobs", [])}
+        diff_sets("CRON-JOB", list(oj), list(nj))
+        for k in sorted(set(oj) & set(nj)):
+            if oj[k] != nj[k]:
+                drift.append(f"CRON-TOGGLED: {k} enabled {oj[k]} -> {nj[k]}")
+
     # services
     o, n = old.get("services", {}), inv["services"]
     if o.get("available") and n.get("available"):
@@ -886,6 +1061,7 @@ def cmd_summary(inv: dict) -> int:
     r, s, t, p, a, m, sv = (inv["repos"], inv["skills"], inv["tools"],
                             inv["providers"], inv["apps"], inv["models"],
                             inv["services"])
+    pl, cr = inv["plugins"], inv["cron"]
     parts = []
     if r.get("available"):
         parts.append(f"repos {r['owned_total']} ({r['local']}L/{r['online_only']}O)")
@@ -902,6 +1078,12 @@ def cmd_summary(inv: dict) -> int:
         parts.append("mcp N/A")
     if p.get("available"):
         parts.append(f"providers {len(p['custom_providers'])}")
+    if pl.get("available"):
+        parts.append(f"plugins {pl['count']}")
+    if cr.get("available"):
+        parts.append(f"cron {cr['enabled']}/{cr['total']}"
+                     + (f" ({len(cr['needs_attention'])}!)"
+                        if cr["needs_attention"] else ""))
     if a.get("available"):
         parts.append(f"pkgs {a['count']}")
     else:
@@ -1007,6 +1189,40 @@ def cmd_where(term: str, as_json: bool = False) -> int:
                     "detail": av
                 })
 
+    # plugins — names, tool names
+    plg = inv.get("plugins", {})
+    if plg.get("available"):
+        for pg in plg.get("plugins", []):
+            if term_l in pg.get("name", "").lower():
+                hits.append({
+                    "section": "plugins",
+                    "item": pg["name"],
+                    "detail": f"{pg.get('version', '?')} "
+                              f"({pg.get('kind', '?')}) — "
+                              f"{pg.get('description', '')}"
+                })
+            for tool in pg.get("tools", []):
+                if term_l in tool.lower():
+                    hits.append({
+                        "section": "plugins",
+                        "item": tool,
+                        "detail": f"tool of plugin `{pg['name']}`"
+                    })
+
+    # cron jobs — names, schedules
+    crn = inv.get("cron", {})
+    if crn.get("available"):
+        for j in crn.get("jobs", []):
+            if term_l in j.get("name", "").lower() or \
+                    term_l in (j.get("schedule") or "").lower():
+                hits.append({
+                    "section": "cron_jobs",
+                    "item": j["name"],
+                    "detail": f"`{j.get('schedule', '—')}` "
+                              f"{'on' if j.get('enabled') else 'off'}, "
+                              f"last {j.get('last_status') or 'never'}"
+                })
+
     # models
     m = inv.get("models", {})
     if m.get("available"):
@@ -1048,7 +1264,7 @@ def cmd_where(term: str, as_json: bool = False) -> int:
     section_order = [
         "skills", "repos_owned", "repos_foreign",
         "mcp_servers", "cli_tools", "providers", "provider_models",
-        "provider_aliases", "models", "key_packages"
+        "provider_aliases", "plugins", "cron_jobs", "models", "key_packages"
     ]
     section_labels = {
         "skills": "SKILLS",
@@ -1059,6 +1275,8 @@ def cmd_where(term: str, as_json: bool = False) -> int:
         "providers": "PROVIDERS",
         "provider_models": "PROVIDER MODELS",
         "provider_aliases": "PROVIDER ALIASES",
+        "plugins": "PLUGINS",
+        "cron_jobs": "CRON JOBS",
         "models": "MODELS",
         "key_packages": "KEY PACKAGES",
     }
