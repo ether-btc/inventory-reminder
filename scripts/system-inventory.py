@@ -21,6 +21,7 @@ Categories, each from its own source of truth:
   plugins   ~/.hermes/plugins/*/plugin.yaml: name, version, kind, tools
   cron      ~/.hermes/cron/jobs.json: schedule, enabled, last status,
             needs-attention list
+  profiles  ~/.hermes/profiles/*: per-profile skill/cron/plugin counts
   apps      `pip list` inside the hermes venv
   models    *.gguf under the llama-cpp + mnemosyne model dirs
   services  `systemctl list-units --type=service --state=running`, filtered
@@ -591,6 +592,63 @@ def scan_cron(cron_dir: Path | None = None) -> dict:
 
 
 # --------------------------------------------------------------------------
+# profiles — ~/.hermes/profiles/*: per-profile skills, cron, plugins
+# --------------------------------------------------------------------------
+def _count_skills_dir(skills_dir: Path) -> int:
+    """Count skill dirs (a SKILL.md at depth 1 or 2, category-nested allowed)."""
+    if not skills_dir.is_dir():
+        return 0
+    n = 0
+    for p in skills_dir.rglob("SKILL.md"):
+        if p.parent != skills_dir:
+            n += 1
+    return n
+
+
+def _cron_stats(jf: Path) -> tuple[int, int]:
+    """(total, enabled) from a jobs.json, or (0, 0) when absent/broken."""
+    try:
+        data = json.loads(jf.read_text())
+    except Exception:  # noqa: BLE001
+        return 0, 0
+    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+    jobs = [j for j in jobs if isinstance(j, dict)] if isinstance(jobs, list) else []
+    return len(jobs), sum(1 for j in jobs if j.get("enabled"))
+
+
+def scan_profiles(profiles_dir: Path | None = None) -> dict:
+    profiles_dir = profiles_dir or (HERMES / "profiles")
+    if not profiles_dir.is_dir():
+        return unavailable(f"no profiles dir at {profiles_dir}")
+    out: list[dict] = []
+    for d in sorted(p for p in profiles_dir.iterdir() if p.is_dir()):
+        if d.name.startswith("."):
+            continue  # Hermes internals (e.g. .deleted profile trash)
+        cron_total, cron_enabled = _cron_stats(d / "cron" / "jobs.json")
+        plugins = 0
+        pdir = d / "plugins"
+        if pdir.is_dir():
+            plugins = sum(1 for x in pdir.iterdir()
+                          if x.is_dir() and (x / "plugin.yaml").is_file())
+        out.append({
+            "name": d.name,
+            "skills": _count_skills_dir(d / "skills"),
+            "cron_total": cron_total,
+            "cron_enabled": cron_enabled,
+            "plugins": plugins,
+            "has_soul": (d / "SOUL.md").is_file(),
+            "has_memory": (d / "memories" / "MEMORY.md").is_file(),
+        })
+    return {
+        "available": True,
+        "dir": str(profiles_dir),
+        "count": len(out),
+        "total_skills": sum(p["skills"] for p in out),
+        "profiles": out,
+    }
+
+
+# --------------------------------------------------------------------------
 # apps — pip list inside the hermes venv
 # --------------------------------------------------------------------------
 def scan_apps() -> dict:
@@ -691,6 +749,7 @@ def build() -> dict:
         "providers": scan_providers(),
         "plugins": scan_plugins(),
         "cron": scan_cron(),
+        "profiles": scan_profiles(),
         "apps": scan_apps(),
         "models": scan_models(),
         "services": scan_services(),
@@ -726,6 +785,7 @@ def write_files(inv: dict) -> None:
                             inv["providers"], inv["apps"], inv["models"],
                             inv["services"])
     pl, cr = inv["plugins"], inv["cron"]
+    pf = inv["profiles"]
     bits = []
     if r.get("available"):
         bits.append(f"{r['owned_total']} repos ({r['local']} local / {r['online_only']} online-only)")
@@ -741,6 +801,8 @@ def write_files(inv: dict) -> None:
         bits.append(f"cron {cr['enabled']}/{cr['total']} on"
                     + (f", {len(cr['needs_attention'])} need attention"
                        if cr["needs_attention"] else ""))
+    if pf.get("available"):
+        bits.append(f"{pf['count']} profiles ({pf['total_skills']} skills)")
     if a.get("available"):
         bits.append(f"{a['count']} python packages")
     if m.get("available"):
@@ -900,6 +962,26 @@ def write_files(inv: dict) -> None:
                      f"{j['last_status'] or 'never'} | "
                      f"{(j['last_run_at'] or '—')[:16]} |")
 
+    # ---- profiles
+    L += _sec("Profiles", f"`{HERMES}/profiles/*` — per-profile skill, cron and "
+                          "plugin footprint (the Skills section above covers "
+                          "only the active profile's enabled set).")
+    if not pf.get("available"):
+        L.append(f"UNAVAILABLE — {pf['error']}")
+    else:
+        L.append(f"**{pf['count']} profiles · {pf['total_skills']} profile-local "
+                 "skills.**")
+        L.append("")
+        L.append("| profile | skills | cron | plugins | SOUL | MEMORY |")
+        L.append("|---|---|---|---|---|---|")
+        for pr_ in pf["profiles"]:
+            cron_cell = (f"{pr_['cron_enabled']}/{pr_['cron_total']}"
+                         if pr_["cron_total"] else "—")
+            L.append(f"| `{pr_['name']}` | {pr_['skills'] or '—'} | {cron_cell} | "
+                     f"{pr_['plugins'] or '—'} | "
+                     f"{'y' if pr_['has_soul'] else '—'} | "
+                     f"{'y' if pr_['has_memory'] else '—'} |")
+
     # ---- apps
     L += _sec("Apps", f"`pip list` inside `{VENV}`.")
     if not a.get("available"):
@@ -1020,6 +1102,16 @@ def cmd_check(inv: dict) -> int:
             if oj[k] != nj[k]:
                 drift.append(f"CRON-TOGGLED: {k} enabled {oj[k]} -> {nj[k]}")
 
+    # profiles — membership + per-profile skill counts
+    o, n = old.get("profiles", {}), inv["profiles"]
+    if o.get("available") and n.get("available"):
+        opf = {x["name"]: x["skills"] for x in o.get("profiles", [])}
+        npf = {x["name"]: x["skills"] for x in n.get("profiles", [])}
+        diff_sets("PROFILE", list(opf), list(npf))
+        for k in sorted(set(opf) & set(npf)):
+            if opf[k] != npf[k]:
+                drift.append(f"PROFILE-SKILLS: {k} {opf[k]} -> {npf[k]}")
+
     # services
     o, n = old.get("services", {}), inv["services"]
     if o.get("available") and n.get("available"):
@@ -1062,6 +1154,7 @@ def cmd_summary(inv: dict) -> int:
                             inv["providers"], inv["apps"], inv["models"],
                             inv["services"])
     pl, cr = inv["plugins"], inv["cron"]
+    pf = inv["profiles"]
     parts = []
     if r.get("available"):
         parts.append(f"repos {r['owned_total']} ({r['local']}L/{r['online_only']}O)")
@@ -1084,6 +1177,8 @@ def cmd_summary(inv: dict) -> int:
         parts.append(f"cron {cr['enabled']}/{cr['total']}"
                      + (f" ({len(cr['needs_attention'])}!)"
                         if cr["needs_attention"] else ""))
+    if pf.get("available"):
+        parts.append(f"profiles {pf['count']}")
     if a.get("available"):
         parts.append(f"pkgs {a['count']}")
     else:
@@ -1223,6 +1318,18 @@ def cmd_where(term: str, as_json: bool = False) -> int:
                               f"last {j.get('last_status') or 'never'}"
                 })
 
+    # profiles — names
+    pfs = inv.get("profiles", {})
+    if pfs.get("available"):
+        for pr_ in pfs.get("profiles", []):
+            if term_l in pr_["name"].lower():
+                hits.append({
+                    "section": "profiles",
+                    "item": pr_["name"],
+                    "detail": f"{pr_['skills']} skills, "
+                              f"cron {pr_['cron_enabled']}/{pr_['cron_total']}"
+                })
+
     # models
     m = inv.get("models", {})
     if m.get("available"):
@@ -1264,7 +1371,8 @@ def cmd_where(term: str, as_json: bool = False) -> int:
     section_order = [
         "skills", "repos_owned", "repos_foreign",
         "mcp_servers", "cli_tools", "providers", "provider_models",
-        "provider_aliases", "plugins", "cron_jobs", "models", "key_packages"
+        "provider_aliases", "plugins", "cron_jobs", "profiles", "models",
+        "key_packages"
     ]
     section_labels = {
         "skills": "SKILLS",
@@ -1277,6 +1385,7 @@ def cmd_where(term: str, as_json: bool = False) -> int:
         "provider_aliases": "PROVIDER ALIASES",
         "plugins": "PLUGINS",
         "cron_jobs": "CRON JOBS",
+        "profiles": "PROFILES",
         "models": "MODELS",
         "key_packages": "KEY PACKAGES",
     }
