@@ -1,6 +1,8 @@
 """Tests for the providers section of system-inventory.py.
 
-Synthetic config.yaml/.env fixtures only — no real host values.
+Synthetic config.yaml/.env fixtures only — no real host values. The
+credential file is never read by the scanner; it only appears here as a
+fixture that must NOT influence the result.
 """
 from __future__ import annotations
 
@@ -40,9 +42,10 @@ toolsets:
   - hermes-cli
 custom_providers:
   - name: alpha
-    base_url: https://api.alpha.invalid/v1
+    base_url: https://api.alpha.invalid/v1?api_key=sk-query-secret
     default_model: alpha-main
     key_env: ALPHA_API_KEY
+    secret_field: hunter2
     models:
       alpha-main: {}
       alpha-mini: {}
@@ -72,7 +75,7 @@ def _scan(tmp_path: Path) -> dict:
     cfg.write_text(CFG)
     env = tmp_path / ".env"
     env.write_text(ENV)
-    return sysinv.scan_providers(cfg=cfg, env=env)
+    return sysinv.scan_providers(cfg=cfg)
 
 
 def test_default_model_block(tmp_path):
@@ -120,17 +123,20 @@ def test_secrets_never_leak(tmp_path):
     assert "fake-value-never-checked" not in s
     assert "another-fake-value" not in s
     assert "sk-plaintext-looking-value" not in s
+    assert "sk-query-secret" not in s
+    assert "hunter2" not in s
     assert "REDACTED" in s
+    assert "api_key=REDACTED" in s
     # env-var references stay visible (names, not values)
     assert "${TEST_LANE_API_KEY}" in s
     assert d["api_key_env"] == "${TEST_LANE_API_KEY}"
 
 
-def test_env_key_names_names_only(tmp_path):
+def test_key_refs_are_config_references_only(tmp_path):
     d = _scan(tmp_path)
-    assert d["env_key_names"] == ["TEST_LANE_API_KEY", "ALPHA_API_KEY"]
-    assert "DEBUG_MODE" not in d["env_key_names"]
-    assert "PATH" not in d["env_key_names"]
+    assert d["key_refs"] == ["ALPHA_API_KEY", "TEST_LANE_API_KEY"]
+    assert "DEBUG_MODE" not in d["key_refs"]
+    assert "PATH" not in d["key_refs"]
 
 
 def test_where_finds_deepseek_style_term(tmp_path):
@@ -152,42 +158,18 @@ def test_unavailable_on_missing_config(tmp_path):
     assert d["available"] is False
 
 
-def test_env_key_presence_flags(tmp_path):
-    env = tmp_path / ".env"
-    env.write_text(
-        "VALUED_API_KEY=super-secret\n"
-        "EMPTY_API_KEY=\n"
-        "DEBUG_MODE=verbose\n"
-    )
-    presence = sysinv.env_key_presence(env)
-    assert presence["VALUED_API_KEY"] is True
-    assert presence["EMPTY_API_KEY"] is False
-    assert "DEBUG_MODE" not in presence
-    s = repr(presence)
-    assert "super-secret" not in s
-    # the section must WIRE the flags through, not just the helper itself
-    cfg = tmp_path / "config.yaml"
-    cfg.write_text("model:\n  default: m\n  provider: p\n")
-    d = sysinv.scan_providers(cfg=cfg, env=env)
-    assert d["env_key_presence"] == presence
-
-
-def test_env_missing_is_distinguishable_from_empty(tmp_path):
+def test_credential_file_is_never_reported(tmp_path):
+    """The credential file is never opened: its names and values never show up."""
+    hermes = tmp_path / ".hermes"
+    hermes.mkdir(parents=True, exist_ok=True)
+    (hermes / ".env").write_text("UNREFERENCED_API_KEY=secret-only-in-env\n")
     cfg = tmp_path / "config.yaml"
     cfg.write_text(CFG)
-    missing_env = tmp_path / "nope.env"
-    d_missing = sysinv.scan_providers(cfg=cfg, env=missing_env)
-    assert d_missing["available"] is True
-    assert d_missing["env_available"] is False
-    assert d_missing["env_error"] is not None
-    assert "nope.env" in d_missing["env_error"]
-
-    empty_env = tmp_path / ".env"
-    empty_env.write_text("")
-    d_empty = sysinv.scan_providers(cfg=cfg, env=empty_env)
-    assert d_empty["available"] is True
-    assert d_empty["env_available"] is True
-    assert d_empty["env_error"] is None
+    d = sysinv.scan_providers(cfg=cfg)
+    s = json.dumps(d)
+    assert "UNREFERENCED_API_KEY" not in s
+    assert "secret-only-in-env" not in s
+    assert d["key_refs"] == ["ALPHA_API_KEY", "TEST_LANE_API_KEY"]
 
 
 def test_fallback_entry_key_order_is_irrelevant(tmp_path):
@@ -199,7 +181,7 @@ def test_fallback_entry_key_order_is_irrelevant(tmp_path):
         "  - model: m-first\n"
         "    provider: p-later\n"
     )
-    d = sysinv.scan_providers(cfg=cfg, env=tmp_path / ".env")
+    d = sysinv.scan_providers(cfg=cfg)
     assert d["fallback_providers"] == [{"provider": "p-later", "model": "m-first"}]
 
 
@@ -211,7 +193,7 @@ def test_credential_pool_inline_value_is_reported(tmp_path):
         "credential_pool_strategies:\n"
         "  pool-inline: round_robin\n"
     )
-    d = sysinv.scan_providers(cfg=cfg, env=tmp_path / ".env")
+    d = sysinv.scan_providers(cfg=cfg)
     assert "pool-inline" in d["credential_pools"]
 
 
@@ -224,7 +206,7 @@ def test_credential_pool_nested_key_reported_whole(tmp_path):
         "  custom:experientiallabs:\n"
         "    ai: round_robin\n"
     )
-    d = sysinv.scan_providers(cfg=cfg, env=tmp_path / ".env")
+    d = sysinv.scan_providers(cfg=cfg)
     assert d["credential_pools"] == ["custom:experientiallabs"]
 
 
@@ -258,8 +240,8 @@ def test_providers_section_written_to_inventory(cfg, fake_home):
 
     md = (hermes / "INVENTORY.md").read_text()
     assert "## Providers" in [l.strip() for l in md.splitlines()]
-    # the presence marker is derived from the VALUE (set vs empty), not the name
-    assert "`ALPHA_API_KEY`=SET" in md
-    assert "`BETA_API_KEY`=UNSET" in md
+    assert "Credential key references" in md
+    assert "`E2E_API_KEY`" in md
+    assert "BETA_API_KEY" not in md
     assert secret_value not in md
     assert secret_value not in json.dumps(inv)

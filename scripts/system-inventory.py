@@ -17,7 +17,8 @@ Categories, each from its own source of truth:
             come back truncated with "…")
   tools     MCP servers from ~/.hermes/config.yaml + key CLIs via which()
   providers chat model wiring: default provider/model, aliases, fallbacks,
-            custom_providers, .env key NAMES (values never read)
+            custom_providers, credential key references by NAME
+            (the credential file is never opened)
   plugins   ~/.hermes/plugins/*/plugin.yaml: name, version, kind, tools
   cron      ~/.hermes/cron/jobs.json: schedule, enabled, last status,
             needs-attention list
@@ -345,7 +346,7 @@ def scan_tools() -> dict:
     return d
 
 
-# providers — chat model/provider wiring from config.yaml + .env key NAMES
+# providers — chat model/provider wiring from config.yaml + credential key refs
 # --------------------------------------------------------------------------
 def _top_block(lines: list[str], key: str) -> list[str]:
     """Lines of the top-level `key:` block (until the next top-level key)."""
@@ -431,17 +432,38 @@ def parse_pool_names(bl: list[str]) -> list[str]:
     return sorted(out)
 
 
-# Values that name an env var (${VAR}) are safe to show; anything else in a
-# key slot is treated as a secret and never leaves the process unredacted.
-# `key_env` fields name an env var by definition, so they stay visible.
-_SECRET_FIELDS = ("api_key", "key", "token")
+# A field whose NAME looks like a credential is redacted whatever its value is.
+# A value that is a URL is scrubbed of userinfo and query-string values: a key
+# can ride in a base_url (?api_key=...) without the field name saying so.
+_SECRET_KEY_RE = re.compile(
+    r"(?i)(^|_)(api_?key|key|token|secret|passw(?:or)?d|credential|auth|cookie|session)($|_)"
+)
+_KEY_REF_FIELDS = ("key_env", "api_key_env")
+
+
+def _scrub_url(v: str) -> str:
+    if "://" not in v:
+        return v
+    scheme, _, rest = v.partition("://")
+    head, slash, tail = rest.partition("/")
+    if "@" in head:                       # user:token@host
+        head = "REDACTED@" + head.rsplit("@", 1)[1]
+    rest = head + slash + tail
+    if "?" in rest:
+        path, _, query = rest.partition("?")
+        pairs = [f"{p.partition('=')[0]}=REDACTED" if "=" in p else p
+                 for p in query.split("&")]
+        rest = path + "?" + "&".join(pairs)
+    return f"{scheme}://{rest}"
 
 
 def _safe_val(k: str, v: str) -> str:
     v = _scalar(v)
-    if k in _SECRET_FIELDS and not v.startswith("${"):
+    if k in _KEY_REF_FIELDS or k.endswith("_env"):
+        return v                          # names an env var by definition
+    if _SECRET_KEY_RE.search(k):
         return "REDACTED"
-    return v
+    return _scrub_url(v)
 
 
 def parse_custom_providers(bl: list[str]) -> list[dict]:
@@ -471,50 +493,42 @@ def parse_custom_providers(bl: list[str]) -> list[dict]:
     return out
 
 
-ENV_KEY_RE = re.compile(r"(?i)^([A-Z_]*(?:API_KEY|_KEY|TOKEN|APIKEY)[A-Z_0-9]*)\s*=")
+_KEY_REF_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+_KEY_FIELDS = ("key_env", "api_key_env", "api_key")
 
 
-def env_key_names(env: Path) -> list[str]:
-    """Names only (never values) of API-key-style variables set in .env."""
-    try:
-        lines = env.read_text(errors="replace").splitlines()
-    except OSError:
-        return []
-    out: list[str] = []
-    for l in lines:
-        m = ENV_KEY_RE.match(l.strip())
-        if m and m.group(1) not in out:
-            out.append(m.group(1))
-    return out
+def key_ref_names(lines: list[str]) -> list[str]:
+    """Env-var NAMES referenced by credential fields in config.yaml.
 
-
-def env_key_presence(env: Path) -> dict[str, bool]:
-    """Per-key presence flags for credential-ish vars in .env.
-
-    NAME -> True when the variable has a non-empty value, False when the
-    line is present but empty. The VALUE is never read into the result,
-    stored, returned or logged — only its emptiness.
+    Only a `${VAR}` reference, or a bare NAME on `key_env:` / `api_key_env:`, is
+    reported — a literal secret in a key field is not a reference and is never
+    emitted. The credential file is deliberately NOT opened: reporting a
+    SET/UNSET flag derived from it is still a read of the values.
     """
-    out: dict[str, bool] = {}
-    try:
-        lines = env.read_text(errors="replace").splitlines()
-    except OSError:
-        return out
-    for l in lines:
-        m = ENV_KEY_RE.match(l.strip())
-        if not m:
+    out: list[str] = []
+    for raw in lines:
+        s = raw.strip()
+        k, sep, v = s.partition(":")
+        if not sep:
             continue
-        name, sep, value = l.partition("=")
-        name = name.strip()
-        if not sep or not name:
+        k = k.strip()
+        if k not in _KEY_FIELDS:
             continue
-        out[name] = bool(value.strip())
-    return out
+        v = _scalar(v)
+        m = _KEY_REF_RE.match(v)
+        if m:
+            name = m.group(1)
+        elif k in ("key_env", "api_key_env") and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", v):
+            name = v
+        else:
+            continue
+        if name not in out:
+            out.append(name)
+    return sorted(out)
 
 
-def scan_providers(cfg: Path | None = None, env: Path | None = None) -> dict:
+def scan_providers(cfg: Path | None = None) -> dict:
     cfg = cfg or CONFIG
-    env = env or (HERMES / ".env")
     try:
         lines = cfg.read_text(errors="replace").splitlines()
     except Exception as e:  # noqa: BLE001
@@ -531,10 +545,7 @@ def scan_providers(cfg: Path | None = None, env: Path | None = None) -> dict:
         "fallback_providers": parse_fallbacks(_top_block(lines, "fallback_providers")),
         "credential_pools": parse_pool_names(_top_block(lines, "credential_pool_strategies")),
         "custom_providers": parse_custom_providers(_top_block(lines, "custom_providers")),
-        "env_key_names": env_key_names(env),
-        "env_key_presence": dict(sorted(env_key_presence(env).items())),
-        "env_available": env.is_file(),
-        "env_error": None if env.is_file() else f"credential env file not found at {env}",
+        "key_refs": key_ref_names(lines),
     }
 
 
@@ -936,9 +947,9 @@ def write_files(inv: dict) -> None:
             L.append(f"| `{name}` | {('`' + path + '`') if path else '**absent**'} |")
 
     # ---- providers
-    L += _sec("Providers", "Source: `~/.hermes/config.yaml`; key NAMES only "
-                           "from `~/.hermes/.env` (values never leave the "
-                           "process).")
+    L += _sec("Providers", "Source: ~/.hermes/config.yaml; credential fields are "
+                           "reported as key references by name (no credential "
+                           "file is read).")
     if not p.get("available"):
         L.append(f"UNAVAILABLE — {p['error']}")
     else:
@@ -965,15 +976,13 @@ def write_files(inv: dict) -> None:
                          f"{c.get('default_model') or c.get('model') or '—'} | "
                          f"`{key}` |")
         L.append("")
-        names = p.get("env_key_names", [])
-        presence = p.get("env_key_presence", {})
-        if names:
-            L.append(f"API-key env names ({len(names)} detected — presence flags only, "
-                     f"values never read): " + ", ".join(
-                         f"`{k}`={'SET' if presence.get(k) else 'UNSET'}" for k in names))
+        refs = p.get("key_refs", [])
+        if refs:
+            L.append(f"Credential key references ({len(refs)}, by name from "
+                     f"config.yaml, values never read): "
+                     + ", ".join(f"`{k}`" for k in refs))
         else:
-            L.append("API-key env names: none detected"
-                     + (f" — {p['env_error']}" if p.get("env_error") else ""))
+            L.append("Credential key references: none in config.yaml")
 
     # ---- plugins
     L += _sec("Plugins", f"`{HERMES}/plugins/*/plugin.yaml` — local user-space "
