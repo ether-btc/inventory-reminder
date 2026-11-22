@@ -158,6 +158,47 @@ def test_unavailable_on_missing_config(tmp_path):
     assert d["available"] is False
 
 
+def test_literal_model_api_key_is_never_emitted(tmp_path):
+    """A literal on model.api_key is not a reference: REDACTED, value never shown."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(CFG.replace(
+        "  api_key: ${TEST_LANE_API_KEY}",
+        "  api_key: sk-literal-never-show"))
+    d = sysinv.scan_providers(cfg=cfg)
+    s = json.dumps(d)
+    assert d["api_key_env"] == "REDACTED"
+    assert "sk-literal-never-show" not in s
+    assert "${TEST_LANE_API_KEY}" not in s  # the reference is gone with the config
+
+
+def test_custom_provider_env_fields_must_be_names(tmp_path):
+    """A literal on custom_providers key_env/api_key_env is not a name: REDACTED."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(CFG.replace(
+        "    key_env: ALPHA_API_KEY",
+        "    key_env: sk-literal-cp-key\n    api_key_env: sk-literal-cp-akey"))
+    d = sysinv.scan_providers(cfg=cfg)
+    s = json.dumps(d)
+    cps = {c["name"]: c for c in d["custom_providers"]}
+    assert cps["alpha"]["key_env"] == "REDACTED"
+    assert cps["alpha"]["api_key_env"] == "REDACTED"
+    assert "sk-literal-cp-key" not in s
+    assert "sk-literal-cp-akey" not in s
+
+
+def test_model_base_url_is_scrubbed(tmp_path):
+    """A key riding in the model base_url (userinfo/query) is scrubbed."""
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(CFG.replace(
+        "  base_url: https://api.testlane.invalid/v1",
+        "  base_url: https://user:sk-leak-u@host.invalid/v1?api_key=sk-leak-q"))
+    d = sysinv.scan_providers(cfg=cfg)
+    s = json.dumps(d)
+    assert d["base_url"] == "https://REDACTED@host.invalid/v1?api_key=REDACTED"
+    assert "sk-leak-u" not in s
+    assert "sk-leak-q" not in s
+
+
 def test_credential_file_is_never_reported(tmp_path):
     """The credential file is never opened: its names and values never show up."""
     hermes = tmp_path / ".hermes"

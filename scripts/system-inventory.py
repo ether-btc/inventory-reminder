@@ -439,6 +439,7 @@ _SECRET_KEY_RE = re.compile(
     r"(?i)(^|_)(api_?key|key|token|secret|passw(?:or)?d|credential|auth|cookie|session)($|_)"
 )
 _KEY_REF_FIELDS = ("key_env", "api_key_env")
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _scrub_url(v: str) -> str:
@@ -460,7 +461,9 @@ def _scrub_url(v: str) -> str:
 def _safe_val(k: str, v: str) -> str:
     v = _scalar(v)
     if k in _KEY_REF_FIELDS or k.endswith("_env"):
-        return v                          # names an env var by definition
+        # names an env var BY DEFINITION only if it is a bare NAME; a
+        # miswritten literal in a *_env field is a secret and is redacted
+        return v if not v or _ENV_NAME_RE.match(v) else "REDACTED"
     if _SECRET_KEY_RE.search(k):
         return "REDACTED"
     return _scrub_url(v)
@@ -518,13 +521,21 @@ def key_ref_names(lines: list[str]) -> list[str]:
         m = _KEY_REF_RE.match(v)
         if m:
             name = m.group(1)
-        elif k in ("key_env", "api_key_env") and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", v):
+        elif k in ("key_env", "api_key_env") and _ENV_NAME_RE.match(v):
             name = v
         else:
             continue
         if name not in out:
             out.append(name)
     return sorted(out)
+
+
+def _model_key_ref(v: str) -> str:
+    """model.api_key value: a ${VAR} reference may be shown; a literal never is."""
+    v = _scalar(v)
+    if not v:
+        return ""
+    return v if _KEY_REF_RE.match(v) else _safe_val("api_key", v)
 
 
 def scan_providers(cfg: Path | None = None) -> dict:
@@ -539,8 +550,8 @@ def scan_providers(cfg: Path | None = None) -> dict:
         "config": str(cfg),
         "default_model": model.get("default", ""),
         "default_provider": model.get("provider", ""),
-        "base_url": model.get("base_url", ""),
-        "api_key_env": _safe_val("api_key_env", model.get("api_key", "")),
+        "base_url": _safe_val("base_url", model.get("base_url", "")),
+        "api_key_env": _model_key_ref(model.get("api_key", "")),
         "aliases": aliases,
         "fallback_providers": parse_fallbacks(_top_block(lines, "fallback_providers")),
         "credential_pools": parse_pool_names(_top_block(lines, "credential_pool_strategies")),
