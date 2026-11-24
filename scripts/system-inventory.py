@@ -810,23 +810,140 @@ def scan_services() -> dict:
 # --------------------------------------------------------------------------
 # cli usage — real invocations from the Hermes state DB (last 14 days)
 # --------------------------------------------------------------------------
-def _cli_in_command(command, cli: str) -> bool:
+_WRAPPER_TOKENS = {"timeout", "env", "xargs", "nice", "nohup", "sudo", "stdbuf", "command", "exec"}
+
+
+def _strip_wrapper_tokens(tokens: list[str]) -> list[str]:
+    toks = list(tokens)
+    changed = True
+    while changed and toks:
+        changed = False
+        if toks[0].lower() in _WRAPPER_TOKENS:
+            toks.pop(0)
+            changed = True
+            continue
+        if toks[0].startswith("-"):
+            opt = toks[0].lower()
+            takes_arg = opt in ("-u", "-i", "-n", "-p", "-s", "-e", "-a", "-I", "-P", "-j", "-L")
+            toks.pop(0)
+            if takes_arg and toks and not toks[0].startswith("-"):
+                toks.pop(0)
+            changed = True
+            continue
+        if toks[0].isdigit():
+            toks.pop(0)
+            changed = True
+            continue
+    return toks
+
+
+def _strip_quotes(command: str) -> str:
+    return re.sub(r'"[^"]*"|\'[^\']*\'', ' "" ', command)
+
+
+def _shell_command_words(command) -> set[str]:
     if not isinstance(command, str) or not command:
-        return False
-    for seg in re.split(r"[;&|\n()]", command):
+        return set()
+    stripped = _strip_quotes(command)
+    words: set[str] = set()
+    for seg in re.split(r"[;&|\n()]", stripped):
         seg = seg.strip()
         if not seg:
             continue
-        m = re.match(r"timeout\s+\d+\s+(.*)", seg, re.IGNORECASE)
-        if m:
-            seg = m.group(1).strip()
-        tokens = seg.split()
+        tokens = _strip_wrapper_tokens(seg.split())
         if not tokens:
             continue
-        name = tokens[0].split("/")[-1]
-        if name == cli:
+        name = tokens[0].split("/")[-1].lower().strip("\"'")
+        if name and name not in ('""', "''"):
+            words.add(name)
+    return words
+
+
+def _code_command_words(command) -> set[str]:
+    if not isinstance(command, str) or not command:
+        return set()
+    words: set[str] = set()
+    patterns = (
+        r"subprocess\.\w+\s*\(\s*\[\s*['\"]([^'\"]+)['\"]",
+        r"subprocess\.\w+\s*\(\s*['\"]([^'\"]+)['\"]",
+        r"os\.system\s*\(\s*['\"]([^'\"]+)['\"]",
+        r"os\.popen\s*\(\s*['\"]([^'\"]+)['\"]",
+        r"exec\s*\(\s*['\"]([^'\"]+)['\"]",
+    )
+    for pat in patterns:
+        for m in re.finditer(pat, command):
+            inner = m.group(1)
+            if any(marker in inner for marker in ("subprocess.", "os.system", "os.popen", "exec(")):
+                words |= _code_command_words(inner)
+            else:
+                words |= _shell_command_words(inner)
+    return words
+
+
+def _command_words(command, is_code: bool = False) -> set[str]:
+    if is_code:
+        return _code_command_words(command)
+    return _shell_command_words(command)
+
+
+def _infer_code_context(args, kwargs) -> bool:
+    for a in args:
+        if isinstance(a, bool):
+            if a:
+                return True
+        elif isinstance(a, str):
+            low = a.lower()
+            if "code" in low or "execute" in low:
+                return True
+        elif a is not None:
+            try:
+                if a:
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
+    for k, v in kwargs.items():
+        kl = k.lower()
+        if "shell" in kl:
+            if isinstance(v, bool):
+                return (not v)
+            if isinstance(v, str):
+                return v.lower() not in ("true", "1", "yes", "shell")
+            if v is not None:
+                try:
+                    return not bool(v)
+                except Exception:  # noqa: BLE001
+                    pass
+        if any(tok in kl for tok in ("code", "execute", "tool", "source", "kind", "context", "mode", "lang")):
+            if isinstance(v, bool):
+                if v:
+                    return True
+            elif isinstance(v, str):
+                low = v.lower()
+                if "code" in low or "execute" in low or low in ("python", "py", "exec"):
+                    return True
+            elif v is not None:
+                try:
+                    if v:
+                        return True
+                except Exception:  # noqa: BLE001
+                    pass
+    for a in list(args) + list(kwargs.values()):
+        if a == "execute_code" or a == "execute-code":
             return True
     return False
+
+
+def _cli_in_command(command, cli: str, *args, **kwargs) -> bool:
+    is_code = _infer_code_context(args, kwargs)
+    words = _command_words(command, is_code=is_code)
+    return str(cli).lower() in words
+
+def _cli_in_code(command, cli, *args, **kwargs):
+    return _cli_in_command(command, cli, *args, code=True, **kwargs)
+
+
+def _cli_in_execute_code(command, cli, *args, **kwargs):
+    return _cli_in_command(command, cli, *args, code=True, **kwargs)
 
 
 def _cli_usage_tools() -> list[str]:
@@ -848,15 +965,16 @@ def scan_cli_usage() -> dict:
     usage = {t: {"last_invoked": None, "invocations_14d": None} for t in tools}
 
     def fail(reason: str) -> dict:
+        usage_fail = {t: {"last_invoked": None, "invocations_14d": None} for t in tools}
         out = {
             "available": False,
             "state_db": str(db),
             "window_days": 14,
             "error": reason,
             "reason": reason,
-            "usage": usage,
+            "usage": usage_fail,
         }
-        out.update(usage)
+        out.update(usage_fail)
         return out
 
     if not db.is_file():
@@ -885,6 +1003,7 @@ def scan_cli_usage() -> dict:
     usage = {t: {"last_invoked": None, "invocations_14d": 0} for t in tools}
     last_ts: dict[str, float] = {t: 0.0 for t in tools}
     counts: dict[str, int] = {t: 0 for t in tools}
+    toolset = set(tools)
 
     try:
         for ts, tc_raw in rows:
@@ -914,7 +1033,9 @@ def scan_cli_usage() -> dict:
                 cmd = args.get("command")
                 if cmd is None:
                     cmd = args.get("code")
-                matched = [t for t in tools if _cli_in_command(cmd, t)]
+                is_code = (name == "execute_code")
+                words = _command_words(cmd, is_code=is_code)
+                matched = toolset & words
                 for t in matched:
                     counts[t] += 1
                     try:

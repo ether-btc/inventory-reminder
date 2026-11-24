@@ -223,3 +223,99 @@ def test_cli_usage_missing_state_db(cfg, fake_home):
     assert inv["cli_usage"]["available"] is False
     assert inv["cli_usage"]["git"]["last_invoked"] is None
     assert inv["cli_usage"]["git"]["invocations_14d"] is None
+
+
+def _load_si():
+    import importlib.util
+    from pathlib import Path
+    REPO = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("system_inventory", REPO / "scripts" / "system-inventory.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_cli_matcher_quoted_codex_not_counted():
+    mod = _load_si()
+    assert mod._cli_in_command(
+        'ps aux | grep -iE "commandcode|ling|codex|hermes -p|mini-swe"', "codex"
+    ) is False
+
+
+def test_cli_matcher_pi_boundaries():
+    mod = _load_si()
+    assert mod._cli_in_command("pi --version", "pi") is True
+    assert mod._cli_in_command("pi list", "pi") is True
+    assert mod._cli_in_command("pipe", "pi") is False
+    assert mod._cli_in_command("pip install pi", "pi") is False
+    assert mod._cli_in_command("/usr/bin/pipo", "pi") is False
+
+
+def test_cli_matcher_opencode_url_not_counted():
+    mod = _load_si()
+    assert mod._cli_in_command('opencode run "x"', "opencode") is True
+    assert mod._cli_in_command("curl https://opencode.ai/zen/go/v1/models", "opencode") is False
+
+
+def test_cli_matcher_wrappers_and_pipe():
+    mod = _load_si()
+    assert mod._cli_in_command("env -u PYTHONPATH aider --message x", "aider") is True
+    assert mod._cli_in_command("timeout 30 aider --yes", "aider") is True
+    assert mod._cli_in_command("xargs -I{} aider x", "aider") is True
+    assert mod._cli_in_command("foo | aider --yes", "aider") is True
+    assert mod._cli_in_command("a | grep aider", "aider") is False
+
+
+def test_cli_matcher_execute_code():
+    mod = _load_si()
+    assert mod._cli_in_command("aider --yes", "aider", code=True) is False
+    assert mod._cli_in_command('subprocess.run(["aider", "--yes"])', "aider", code=True) is True
+    assert mod._cli_in_command('os.system("aider --yes")', "aider", code=True) is True
+
+
+def test_cli_usage_processing_failure_nulls(cfg, fake_home, monkeypatch):
+    import os
+    import json as _json
+    import sqlite3
+    import time
+    from pathlib import Path
+
+    home = fake_home
+    os.environ["HOME"] = str(home)
+    hermes = home / ".hermes"
+    db = hermes / "state.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE messages (id INTEGER PRIMARY KEY, timestamp REAL, "
+        "role TEXT, tool_calls TEXT)"
+    )
+    now = time.time()
+    conn.execute(
+        "INSERT INTO messages (timestamp, role, tool_calls) VALUES (?, ?, ?)",
+        (now - 100, "assistant",
+         _json.dumps([{"function": {"name": "terminal",
+                                    "arguments": _json.dumps({"command": "git status"})}}])),
+    )
+    conn.commit()
+    conn.close()
+
+    REPO = Path(__file__).resolve().parents[1]
+    spec = __import__("importlib.util", fromlist=["x"]).spec_from_file_location(
+        "si_fail", REPO / "scripts" / "system-inventory.py"
+    )
+    mod = __import__("importlib.util", fromlist=["x"]).module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    original = mod.json.loads
+    triggered = {"done": False}
+
+    def boom(s):
+        if (not triggered["done"]) and isinstance(s, str) and "command" in s:
+            triggered["done"] = True
+            raise RuntimeError("boom")
+        return original(s)
+
+    monkeypatch.setattr(mod.json, "loads", boom)
+    res = mod.scan_cli_usage()
+    assert res["available"] is False
+    assert res["git"]["invocations_14d"] is None
