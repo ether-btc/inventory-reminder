@@ -48,6 +48,8 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
+import time
 import re
 import shutil
 import subprocess
@@ -806,6 +808,150 @@ def scan_services() -> dict:
 
 
 # --------------------------------------------------------------------------
+# cli usage — real invocations from the Hermes state DB (last 14 days)
+# --------------------------------------------------------------------------
+def _cli_in_command(command, cli: str) -> bool:
+    if not isinstance(command, str) or not command:
+        return False
+    for seg in re.split(r"[;&|\n()]", command):
+        seg = seg.strip()
+        if not seg:
+            continue
+        m = re.match(r"timeout\s+\d+\s+(.*)", seg, re.IGNORECASE)
+        if m:
+            seg = m.group(1).strip()
+        tokens = seg.split()
+        if not tokens:
+            continue
+        name = tokens[0].split("/")[-1]
+        if name == cli:
+            return True
+    return False
+
+
+def _cli_usage_tools() -> list[str]:
+    tools = list(CLI_TOOLS)
+    live = HERMES / "inventory-config.json"
+    if live.is_file():
+        try:
+            cfg = json.loads(live.read_text())
+            if isinstance(cfg.get("cli_tools"), list):
+                tools = list(cfg["cli_tools"])
+        except Exception:  # noqa: BLE001
+            pass
+    return tools
+
+
+def scan_cli_usage() -> dict:
+    tools = _cli_usage_tools()
+    db = HERMES / "state.db"
+    usage = {t: {"last_invoked": None, "invocations_14d": None} for t in tools}
+
+    def fail(reason: str) -> dict:
+        out = {
+            "available": False,
+            "state_db": str(db),
+            "window_days": 14,
+            "error": reason,
+            "reason": reason,
+            "usage": usage,
+        }
+        out.update(usage)
+        return out
+
+    if not db.is_file():
+        return fail(f"state.db not found at {db}")
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=30)
+    except Exception as e:  # noqa: BLE001
+        return fail(f"cannot open state.db: {e}")
+    cutoff = time.time() - 14 * 86400
+    try:
+        cur = conn.execute(
+            "SELECT timestamp, tool_calls FROM messages "
+            "WHERE role = 'assistant' AND tool_calls IS NOT NULL "
+            "AND TRIM(tool_calls) <> '' AND timestamp >= ?",
+            (cutoff,),
+        )
+        rows = cur.fetchall()
+    except Exception as e:  # noqa: BLE001
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return fail(f"state.db query failed: {e}")
+
+    # reset to known-zero counts on successful query
+    usage = {t: {"last_invoked": None, "invocations_14d": 0} for t in tools}
+    last_ts: dict[str, float] = {t: 0.0 for t in tools}
+    counts: dict[str, int] = {t: 0 for t in tools}
+
+    try:
+        for ts, tc_raw in rows:
+            try:
+                tc = json.loads(tc_raw)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(tc, dict):
+                tc = [tc]
+            if not isinstance(tc, list):
+                continue
+            for call in tc:
+                if not isinstance(call, dict):
+                    continue
+                fn = call.get("function", {}) if isinstance(call.get("function"), dict) else {}
+                name = fn.get("name") or call.get("name") or call.get("tool")
+                if name not in ("terminal", "execute_code"):
+                    continue
+                args = fn.get("arguments", call.get("arguments", {}))
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except (json.JSONDecodeError, TypeError):
+                        args = {}
+                if not isinstance(args, dict):
+                    args = {}
+                cmd = args.get("command")
+                if cmd is None:
+                    cmd = args.get("code")
+                matched = [t for t in tools if _cli_in_command(cmd, t)]
+                for t in matched:
+                    counts[t] += 1
+                    try:
+                        tsf = float(ts)
+                    except (TypeError, ValueError):
+                        tsf = 0.0
+                    if tsf > last_ts[t]:
+                        last_ts[t] = tsf
+    except Exception as e:  # noqa: BLE001
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return fail(f"state.db processing failed: {e}")
+
+    try:
+        conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+    for t in tools:
+        usage[t]["invocations_14d"] = counts[t]
+        if last_ts[t] > 0:
+            usage[t]["last_invoked"] = datetime.fromtimestamp(last_ts[t]).date().isoformat()
+
+    out = {
+        "available": True,
+        "state_db": str(db),
+        "window_days": 14,
+        "error": None,
+        "reason": None,
+        "usage": usage,
+    }
+    out.update(usage)
+    return out
+
+# --------------------------------------------------------------------------
 # build / write
 # --------------------------------------------------------------------------
 def build() -> dict:
@@ -823,6 +969,7 @@ def build() -> dict:
         "apps": scan_apps(),
         "models": scan_models(),
         "services": scan_services(),
+        "cli_usage": scan_cli_usage(),
     }
 
 
@@ -956,6 +1103,24 @@ def write_files(inv: dict) -> None:
         L.append("|---|---|")
         for name, path in t["cli_tools"].items():
             L.append(f"| `{name}` | {('`' + path + '`') if path else '**absent**'} |")
+
+    # ---- cli usage
+    cu = inv.get("cli_usage", {})
+    L += _sec("CLI usage", "Source: `state.db` (last 14 days) — real invocations of CLIs.")
+    if not cu.get("available", True):
+        L.append(f"UNAVAILABLE — {cu.get('error') or cu.get('reason') or 'unknown'}")
+    else:
+        umap = cu.get("usage", cu)
+        L.append("| CLI | last invoked | invocations (14d) |")
+        L.append("|---|---|---|")
+        for name in sorted(t.get("cli_tools", {})):
+            info = umap.get(name, {}) if isinstance(umap, dict) else {}
+            if not isinstance(info, dict):
+                info = {}
+            li = info.get("last_invoked") or "—"
+            cnt = info.get("invocations_14d")
+            cnt_s = "—" if cnt is None else str(cnt)
+            L.append(f"| `{name}` | {li} | {cnt_s} |")
 
     # ---- providers
     L += _sec("Providers", "Source: ~/.hermes/config.yaml; credential fields are "
@@ -1333,6 +1498,23 @@ def cmd_where(term: str, as_json: bool = False) -> int:
                     "detail": path or "**absent**"
                 })
 
+    # cli usage
+    cu = inv.get("cli_usage", {})
+    umap = cu.get("usage", cu) if isinstance(cu, dict) else {}
+    if isinstance(cu, dict) and cu.get("available", True) and isinstance(umap, dict):
+        for name, info in umap.items():
+            if not isinstance(info, dict):
+                continue
+            if term_l in str(name).lower():
+                li = info.get("last_invoked")
+                cnt = info.get("invocations_14d")
+                cnt_s = "n/a" if cnt is None else str(cnt)
+                hits.append({
+                    "section": "cli_usage",
+                    "item": name,
+                    "detail": f"last invoked {li or 'never'} · {cnt_s} invocations (14d)"
+                })
+
     # providers — custom provider names, aliases, model ids
     pr = inv.get("providers", {})
     if pr.get("available"):
@@ -1445,7 +1627,7 @@ def cmd_where(term: str, as_json: bool = False) -> int:
 
     section_order = [
         "skills", "repos_owned", "repos_foreign",
-        "mcp_servers", "cli_tools", "providers", "provider_models",
+        "mcp_servers", "cli_tools", "cli_usage", "providers", "provider_models",
         "provider_aliases", "plugins", "cron_jobs", "profiles", "models",
         "key_packages"
     ]
@@ -1455,6 +1637,7 @@ def cmd_where(term: str, as_json: bool = False) -> int:
         "repos_foreign": "REPOS (foreign)",
         "mcp_servers": "MCP SERVERS",
         "cli_tools": "CLI TOOLS",
+        "cli_usage": "CLI USAGE",
         "providers": "PROVIDERS",
         "provider_models": "PROVIDER MODELS",
         "provider_aliases": "PROVIDER ALIASES",

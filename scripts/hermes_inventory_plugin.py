@@ -150,6 +150,23 @@ def _where_impl(term: str, as_json: bool = False) -> str:
                     "detail": path or "**absent**"
                 })
 
+    # cli usage
+    cu = inv.get("cli_usage", {})
+    umap = cu.get("usage", cu) if isinstance(cu, dict) else {}
+    if isinstance(cu, dict) and cu.get("available", True) and isinstance(umap, dict):
+        for name, info in umap.items():
+            if not isinstance(info, dict):
+                continue
+            if term_l in str(name).lower():
+                li = info.get("last_invoked")
+                cnt = info.get("invocations_14d")
+                cnt_s = "n/a" if cnt is None else str(cnt)
+                hits.append({
+                    "section": "cli_usage",
+                    "item": name,
+                    "detail": f"last invoked {li or 'never'} · {cnt_s} invocations (14d)"
+                })
+
     # providers — custom providers, their model ids, aliases
     pr = inv.get("providers", {})
     if pr.get("available"):
@@ -257,7 +274,7 @@ def _where_impl(term: str, as_json: bool = False) -> str:
 
     section_order = [
         "skills", "repos_owned", "repos_foreign",
-        "mcp_servers", "cli_tools", "providers", "provider_models",
+        "mcp_servers", "cli_tools", "cli_usage", "providers", "provider_models",
         "provider_aliases", "plugins", "cron_jobs", "profiles", "models",
         "key_packages"
     ]
@@ -267,6 +284,7 @@ def _where_impl(term: str, as_json: bool = False) -> str:
         "repos_foreign": "REPOS (foreign)",
         "mcp_servers": "MCP SERVERS",
         "cli_tools": "CLI TOOLS",
+        "cli_usage": "CLI USAGE",
         "providers": "PROVIDERS",
         "provider_models": "PROVIDER MODELS",
         "provider_aliases": "PROVIDER ALIASES",

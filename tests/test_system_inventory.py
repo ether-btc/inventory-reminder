@@ -168,3 +168,58 @@ def test_where_skills_unavailable_degrades_gracefully(cfg, fake_home):
     # Since skills is UNAVAILABLE and term not found elsewhere -> MISS
     assert p.returncode == 1, p.stdout
     assert "MISS" in p.stdout
+
+
+def test_cli_usage_counts_synthetic_state_db(cfg, fake_home):
+    import json
+    import sqlite3
+    import time
+
+    hermes = fake_home / ".hermes"
+    db = hermes / "state.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE messages (id INTEGER PRIMARY KEY, timestamp REAL, "
+        "role TEXT, tool_calls TEXT)"
+    )
+    now = time.time()
+    inside = now - 3600
+    outside = now - (20 * 86400)
+    rows = [
+        (inside, "assistant", json.dumps([{
+            "function": {"name": "terminal",
+                         "arguments": json.dumps({"command": "git status"})}
+        }])),
+        (inside - 60, "assistant", json.dumps([{
+            "function": {"name": "terminal",
+                         "arguments": json.dumps({"command": "rg needle file"})}
+        }])),
+        (outside, "assistant", json.dumps([{
+            "function": {"name": "terminal",
+                         "arguments": json.dumps({"command": "git log"})}
+        }])),
+        (inside - 120, "assistant", json.dumps([{
+            "function": {"name": "execute_code",
+                         "arguments": json.dumps({"code": "print('hi')"})}
+        }])),
+    ]
+    conn.executemany(
+        "INSERT INTO messages (timestamp, role, tool_calls) VALUES (?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+
+    inv = _load_run(cfg, fake_home)
+    assert inv["cli_usage"]["available"] is True
+    assert inv["cli_usage"]["git"]["invocations_14d"] == 1
+    import datetime as _dt
+    assert inv["cli_usage"]["git"]["last_invoked"] == _dt.date.fromtimestamp(inside).isoformat()
+    assert inv["cli_usage"]["rg"]["invocations_14d"] == 1
+
+
+def test_cli_usage_missing_state_db(cfg, fake_home):
+    inv = _load_run(cfg, fake_home)
+    assert inv["cli_usage"]["available"] is False
+    assert inv["cli_usage"]["git"]["last_invoked"] is None
+    assert inv["cli_usage"]["git"]["invocations_14d"] is None
